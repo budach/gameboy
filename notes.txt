@@ -1,0 +1,59 @@
+Summary for cycle-accurate stepping
+
+Step 1 machine cycle (4 T-cycles) at a time.
+
+After each cycle, update:
+
+    PPU state (scanline, mode)
+
+    Timer registers (DIV, TIMA)
+
+    DMA transfer (if active)
+
+    Serial I/O (if used)
+
+Only check interrupts after:
+
+    Completing a full instruction, or
+
+    During HALT state.
+
+
+
+# Pseudocode: cycle-accurate Game Boy CPU emulation
+
+while True:
+    if cpu.halted:
+        # HALT mode: advance 1 machine cycle at a time
+        step_one_machine_cycle()
+        update_ppu()
+        update_timers()
+        update_dma()
+        update_serial()
+        
+        # Check for interrupts every cycle while halted
+        if interrupt_requested() and cpu.IME_enabled:
+            cpu.halted = False
+            handle_interrupt()
+        continue
+
+    if cpu.cycles_remaining == 0:
+        # Fetch and decode next instruction
+        cpu.current_opcode = memory[cpu.PC]
+        cpu.cycles_remaining = cycles_for_opcode(cpu.current_opcode)
+        cpu.PC += 1
+
+    # Execute one machine cycle of current instruction
+    step_one_machine_cycle_of_opcode(cpu.current_opcode)
+    cpu.cycles_remaining -= 1
+
+    # Every machine cycle, update peripherals
+    update_ppu()
+    update_timers()
+    update_dma()
+    update_serial()
+
+    # After instruction finishes, check for interrupts
+    if cpu.cycles_remaining == 0:
+        if interrupt_requested() and cpu.IME_enabled:
+            handle_interrupt()
