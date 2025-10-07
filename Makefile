@@ -4,7 +4,7 @@ DEBUGFLAGS = -O0 -g3
 RELEASEFLAGS = -flto=auto -march=native -O3 -s
 LDFLAGS = -lraylib -lopengl32 -lgdi32 -lwinmm
 
-FILES = main.cpp gameboy.cpp opcodes.cpp
+FILES = main.cpp gameboy.cpp opcodes.cpp single_step_tests.cpp
 EXECUTABLE = gameboy.exe
 
 release:

@@ -5495,9 +5495,8 @@ u8 op_0xCB_0xEF_SET_5_A(Gameboy& gb)
 
 u8 op_0x10_STOP(Gameboy& gb)
 {
-    // just a stub implementation so far
-    std::cout << "STOP instruction triggered" << std::endl;
-    gb.PC += 2;
+    // not a real implementation, but apparently no licensed games use this
+    gb.PC += 1;
     return 4;
 }
 
