@@ -13,6 +13,8 @@ static_assert(std::endian::native == std::endian::little,
 
 using u8 = uint8_t;
 using u16 = uint16_t;
+using u32 = uint32_t;
+using u64 = uint64_t;
 
 constexpr u8 FLAG_Z = 1 << 7; // zero flag
 constexpr u8 FLAG_N = 1 << 6; // subtract flag
@@ -25,7 +27,8 @@ struct Gameboy {
     /* ---  members  --- */
     /* ----------------- */
 
-    std::vector<void (*)(Gameboy&)> opcodes[256]; // opcode table
+    u8 (*opcodes[256])(Gameboy&); // opcode table
+    u8 (*cb_opcodes[256])(Gameboy&); // CB-prefixed opcode table
 
     std::vector<u8> memory; // 64KB addressable memory
     std::vector<u8> cartridge; // full cartridge content
@@ -64,16 +67,23 @@ struct Gameboy {
 
     u16 SP; // stack pointer
     u16 PC; // program counter
-    u8 low; // temporary storage for opcodes
-    u8 high; // temporary storage for opcodes
+    bool IME; // interrupt master enable
+    bool IME_scheduled; // whether to enable IME after next instruction
+    bool halted; // whether the CPU is halted
+    bool halt_bug; // whether the CPU is in halt bug state
 
     /* ----------------- */
     /* ---  methods  --- */
     /* ----------------- */
 
     Gameboy(const std::string& path_rom);
+
     u8 read8(u16 addr) const;
     u16 read16(u16 addr) const;
     void write8(u16 addr, u8 value);
     void write16(u16 addr, u16 value);
+
+    u8 run_opcode();
+    void run_one_frame();
+    void render_screen();
 };
