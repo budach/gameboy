@@ -2,11 +2,11 @@
 
 int main()
 {
-    Gameboy demo_gb("roms/Tetris.gb");
+    Gameboy gb("roms/Tetris.gb  ");
 
     while (1) {
-        demo_gb.run_one_frame();
-        demo_gb.render_screen();
+        gb.run_one_frame();
+        gb.render_screen();
     }
 
     return 0;

@@ -181,10 +181,9 @@ u8 op_0xC5_PUSH_BC(Gameboy& gb)
 u8 op_0xCB_0x11_RL_C(Gameboy& gb)
 {
     u8 old_c = gb.BC_bytes.C;
-    u8 carry_in = (gb.AF_bytes.F & FLAG_C) ? 1 : 0;
 
     // rotate left through carry
-    gb.BC_bytes.C = (old_c << 1) | carry_in;
+    gb.BC_bytes.C = (old_c << 1) | ((gb.AF_bytes.F & FLAG_C) ? 1 : 0);
 
     gb.AF_bytes.F = 0; // clear all flags
     gb.AF_bytes.F |= ((gb.BC_bytes.C == 0) * FLAG_Z); // Z flag if result is 0
@@ -680,15 +679,11 @@ u8 op_0xEF_RST_28h(Gameboy& gb)
 
 u8 op_0x87_ADD_A_A(Gameboy& gb)
 {
-    u8 value = gb.AF_bytes.A;
-    uint16_t result = static_cast<uint16_t>(gb.AF_bytes.A) + static_cast<uint16_t>(value);
+    u8 a = gb.AF_bytes.A;
+    u16 result = a << 1;
 
-    gb.AF_bytes.F = 0; // clear all flags
-    gb.AF_bytes.F |= ((result & 0xFF) == 0) * FLAG_Z; // Z flag if result is 0
-    gb.AF_bytes.F |= (((gb.AF_bytes.A & 0x0F) + (value & 0x0F)) > 0x0F) * FLAG_H; // H flag if carry from bit 4
-    gb.AF_bytes.F |= ((result > 0xFF) * FLAG_C); // C flag if carry (result > 255)
-
-    gb.AF_bytes.A = static_cast<u8>(result & 0xFF); // store low 8 bits of result in A
+    gb.AF_bytes.F = ((result & 0xFF) == 0) * FLAG_Z | ((a & 0x0F) > 0x07) * FLAG_H | (a > 0x7F) * FLAG_C;
+    gb.AF_bytes.A = static_cast<u8>(result);
 
     gb.PC += 1;
     return 4;
@@ -940,11 +935,11 @@ u8 op_0x03_INC_BC(Gameboy& gb)
 
 u8 op_0x07_RLCA(Gameboy& gb)
 {
-    u8 old_a = gb.AF_bytes.A;
-    gb.AF_bytes.A = (old_a << 1) | ((old_a & 0x80) >> 7); // rotate left, old bit 7 to bit 0
+    u8 a = gb.AF_bytes.A;
+    u8 carry = a >> 7; // Extract bit 7 once
 
-    gb.AF_bytes.F = 0; // clear all flags
-    gb.AF_bytes.F |= ((old_a & 0x80) >> 7) * FLAG_C; // C flag if old bit 7 was set
+    gb.AF_bytes.A = (a << 1) | carry;
+    gb.AF_bytes.F = carry * FLAG_C;
 
     gb.PC += 1;
     return 4;
@@ -1645,14 +1640,12 @@ u8 op_0x80_ADD_A_B(Gameboy& gb)
 
 u8 op_0x81_ADD_A_C(Gameboy& gb)
 {
-    uint16_t result = static_cast<uint16_t>(gb.AF_bytes.A) + static_cast<uint16_t>(gb.BC_bytes.C);
+    u8 a = gb.AF_bytes.A;
+    u8 c = gb.BC_bytes.C;
+    u16 result = a + c;
 
-    gb.AF_bytes.F = 0; // clear all flags
-    gb.AF_bytes.F |= ((result & 0xFF) == 0) * FLAG_Z; // Z flag if result is 0
-    gb.AF_bytes.F |= (((gb.AF_bytes.A & 0x0F) + (gb.BC_bytes.C & 0x0F)) > 0x0F) * FLAG_H; // H flag if carry from bit 4
-    gb.AF_bytes.F |= (result > 0xFF) * FLAG_C; // C flag if carry (result > 255)
-
-    gb.AF_bytes.A = static_cast<u8>(result & 0xFF); // store low 8 bits of result in A
+    gb.AF_bytes.F = ((result & 0xFF) == 0) * FLAG_Z | (((a & 0x0F) + (c & 0x0F)) > 0x0F) * FLAG_H | (result > 0xFF) * FLAG_C;
+    gb.AF_bytes.A = static_cast<u8>(result);
 
     gb.PC += 1;
     return 4;
@@ -1660,14 +1653,12 @@ u8 op_0x81_ADD_A_C(Gameboy& gb)
 
 u8 op_0x82_ADD_A_D(Gameboy& gb)
 {
-    uint16_t result = static_cast<uint16_t>(gb.AF_bytes.A) + static_cast<uint16_t>(gb.DE_bytes.D);
+    u8 a = gb.AF_bytes.A;
+    u8 d = gb.DE_bytes.D;
+    u16 result = a + d;
 
-    gb.AF_bytes.F = 0; // clear all flags
-    gb.AF_bytes.F |= ((result & 0xFF) == 0) * FLAG_Z; // Z flag if result is 0
-    gb.AF_bytes.F |= (((gb.AF_bytes.A & 0x0F) + (gb.DE_bytes.D & 0x0F)) > 0x0F) * FLAG_H; // H flag if carry from bit 4
-    gb.AF_bytes.F |= (result > 0xFF) * FLAG_C; // C flag if carry (result > 255)
-
-    gb.AF_bytes.A = static_cast<u8>(result & 0xFF); // store low 8 bits of result in A
+    gb.AF_bytes.F = ((result & 0xFF) == 0) * FLAG_Z | (((a & 0x0F) + (d & 0x0F)) > 0x0F) * FLAG_H | (result > 0xFF) * FLAG_C;
+    gb.AF_bytes.A = static_cast<u8>(result);
 
     gb.PC += 1;
     return 4;
@@ -1675,14 +1666,12 @@ u8 op_0x82_ADD_A_D(Gameboy& gb)
 
 u8 op_0x83_ADD_A_E(Gameboy& gb)
 {
-    uint16_t result = static_cast<uint16_t>(gb.AF_bytes.A) + static_cast<uint16_t>(gb.DE_bytes.E);
+    u8 a = gb.AF_bytes.A;
+    u8 e = gb.DE_bytes.E;
+    u16 result = a + e;
 
-    gb.AF_bytes.F = 0; // clear all flags
-    gb.AF_bytes.F |= ((result & 0xFF) == 0) * FLAG_Z; // Z flag if result is 0
-    gb.AF_bytes.F |= (((gb.AF_bytes.A & 0x0F) + (gb.DE_bytes.E & 0x0F)) > 0x0F) * FLAG_H; // H flag if carry from bit 4
-    gb.AF_bytes.F |= (result > 0xFF) * FLAG_C; // C flag if carry (result > 255)
-
-    gb.AF_bytes.A = static_cast<u8>(result & 0xFF); // store low 8 bits of result in A
+    gb.AF_bytes.F = ((result & 0xFF) == 0) * FLAG_Z | (((a & 0x0F) + (e & 0x0F)) > 0x0F) * FLAG_H | (result > 0xFF) * FLAG_C;
+    gb.AF_bytes.A = static_cast<u8>(result);
 
     gb.PC += 1;
     return 4;
@@ -1690,14 +1679,12 @@ u8 op_0x83_ADD_A_E(Gameboy& gb)
 
 u8 op_0x84_ADD_A_H(Gameboy& gb)
 {
-    uint16_t result = static_cast<uint16_t>(gb.AF_bytes.A) + static_cast<uint16_t>(gb.HL_bytes.H);
+    u8 a = gb.AF_bytes.A;
+    u8 h = gb.HL_bytes.H;
+    u16 result = a + h;
 
-    gb.AF_bytes.F = 0; // clear all flags
-    gb.AF_bytes.F |= ((result & 0xFF) == 0) * FLAG_Z; // Z flag if result is 0
-    gb.AF_bytes.F |= (((gb.AF_bytes.A & 0x0F) + (gb.HL_bytes.H & 0x0F)) > 0x0F) * FLAG_H; // H flag if carry from bit 4
-    gb.AF_bytes.F |= (result > 0xFF) * FLAG_C; // C flag if carry (result > 255)
-
-    gb.AF_bytes.A = static_cast<u8>(result & 0xFF); // store low 8 bits of result in A
+    gb.AF_bytes.F = ((result & 0xFF) == 0) * FLAG_Z | (((a & 0x0F) + (h & 0x0F)) > 0x0F) * FLAG_H | (result > 0xFF) * FLAG_C;
+    gb.AF_bytes.A = static_cast<u8>(result);
 
     gb.PC += 1;
     return 4;
@@ -1705,14 +1692,12 @@ u8 op_0x84_ADD_A_H(Gameboy& gb)
 
 u8 op_0x85_ADD_A_L(Gameboy& gb)
 {
-    uint16_t result = static_cast<uint16_t>(gb.AF_bytes.A) + static_cast<uint16_t>(gb.HL_bytes.L);
+    u8 a = gb.AF_bytes.A;
+    u8 l = gb.HL_bytes.L;
+    u16 result = a + l;
 
-    gb.AF_bytes.F = 0; // clear all flags
-    gb.AF_bytes.F |= ((result & 0xFF) == 0) * FLAG_Z; // Z flag if result is 0
-    gb.AF_bytes.F |= (((gb.AF_bytes.A & 0x0F) + (gb.HL_bytes.L & 0x0F)) > 0x0F) * FLAG_H; // H flag if carry from bit 4
-    gb.AF_bytes.F |= (result > 0xFF) * FLAG_C; // C flag if carry (result > 255)
-
-    gb.AF_bytes.A = static_cast<u8>(result & 0xFF); // store low 8 bits of result in A
+    gb.AF_bytes.F = ((result & 0xFF) == 0) * FLAG_Z | (((a & 0x0F) + (l & 0x0F)) > 0x0F) * FLAG_H | (result > 0xFF) * FLAG_C;
+    gb.AF_bytes.A = static_cast<u8>(result);
 
     gb.PC += 1;
     return 4;
@@ -1720,15 +1705,13 @@ u8 op_0x85_ADD_A_L(Gameboy& gb)
 
 u8 op_0x88_ADC_A_B(Gameboy& gb)
 {
-    uint16_t carry = (gb.AF_bytes.F & FLAG_C) ? 1 : 0;
-    uint16_t result = static_cast<uint16_t>(gb.AF_bytes.A) + static_cast<uint16_t>(gb.BC_bytes.B) + carry;
+    u8 a = gb.AF_bytes.A;
+    u8 b = gb.BC_bytes.B;
+    u8 carry = (gb.AF_bytes.F & FLAG_C) >> 4;
+    u16 result = a + b + carry;
 
-    gb.AF_bytes.F = 0; // clear all flags
-    gb.AF_bytes.F |= ((result & 0xFF) == 0) * FLAG_Z; // Z flag if result is 0
-    gb.AF_bytes.F |= (((gb.AF_bytes.A & 0x0F) + (gb.BC_bytes.B & 0x0F) + carry) > 0x0F) * FLAG_H; // H flag if carry from bit 4
-    gb.AF_bytes.F |= (result > 0xFF) * FLAG_C; // C flag if carry (result > 255)
-
-    gb.AF_bytes.A = static_cast<u8>(result & 0xFF); // store low 8 bits of result in A
+    gb.AF_bytes.F = ((result & 0xFF) == 0) * FLAG_Z | (((a & 0x0F) + (b & 0x0F) + carry) > 0x0F) * FLAG_H | (result > 0xFF) * FLAG_C;
+    gb.AF_bytes.A = static_cast<u8>(result);
 
     gb.PC += 1;
     return 4;
@@ -1736,15 +1719,13 @@ u8 op_0x88_ADC_A_B(Gameboy& gb)
 
 u8 op_0x89_ADC_A_C(Gameboy& gb)
 {
-    uint16_t carry = (gb.AF_bytes.F & FLAG_C) ? 1 : 0;
-    uint16_t result = static_cast<uint16_t>(gb.AF_bytes.A) + static_cast<uint16_t>(gb.BC_bytes.C) + carry;
+    u8 a = gb.AF_bytes.A;
+    u8 c = gb.BC_bytes.C;
+    u8 carry = (gb.AF_bytes.F & FLAG_C) >> 4;
+    u16 result = a + c + carry;
 
-    gb.AF_bytes.F = 0; // clear all flags
-    gb.AF_bytes.F |= ((result & 0xFF) == 0) * FLAG_Z; // Z flag if result is 0
-    gb.AF_bytes.F |= (((gb.AF_bytes.A & 0x0F) + (gb.BC_bytes.C & 0x0F) + carry) > 0x0F) * FLAG_H; // H flag if carry from bit 4
-    gb.AF_bytes.F |= (result > 0xFF) * FLAG_C; // C flag if carry (result > 255)
-
-    gb.AF_bytes.A = static_cast<u8>(result & 0xFF); // store low 8 bits of result in A
+    gb.AF_bytes.F = ((result & 0xFF) == 0) * FLAG_Z | (((a & 0x0F) + (c & 0x0F) + carry) > 0x0F) * FLAG_H | (result > 0xFF) * FLAG_C;
+    gb.AF_bytes.A = static_cast<u8>(result);
 
     gb.PC += 1;
     return 4;
@@ -1752,15 +1733,13 @@ u8 op_0x89_ADC_A_C(Gameboy& gb)
 
 u8 op_0x8A_ADC_A_D(Gameboy& gb)
 {
-    uint16_t carry = (gb.AF_bytes.F & FLAG_C) ? 1 : 0;
-    uint16_t result = static_cast<uint16_t>(gb.AF_bytes.A) + static_cast<uint16_t>(gb.DE_bytes.D) + carry;
+    u8 a = gb.AF_bytes.A;
+    u8 d = gb.DE_bytes.D;
+    u8 carry = (gb.AF_bytes.F & FLAG_C) >> 4;
+    u16 result = a + d + carry;
 
-    gb.AF_bytes.F = 0; // clear all flags
-    gb.AF_bytes.F |= ((result & 0xFF) == 0) * FLAG_Z; // Z flag if result is 0
-    gb.AF_bytes.F |= (((gb.AF_bytes.A & 0x0F) + (gb.DE_bytes.D & 0x0F) + carry) > 0x0F) * FLAG_H; // H flag if carry from bit 4
-    gb.AF_bytes.F |= (result > 0xFF) * FLAG_C; // C flag if carry (result > 255)
-
-    gb.AF_bytes.A = static_cast<u8>(result & 0xFF); // store low 8 bits of result in A
+    gb.AF_bytes.F = ((result & 0xFF) == 0) * FLAG_Z | (((a & 0x0F) + (d & 0x0F) + carry) > 0x0F) * FLAG_H | (result > 0xFF) * FLAG_C;
+    gb.AF_bytes.A = static_cast<u8>(result);
 
     gb.PC += 1;
     return 4;
@@ -1768,15 +1747,13 @@ u8 op_0x8A_ADC_A_D(Gameboy& gb)
 
 u8 op_0x8B_ADC_A_E(Gameboy& gb)
 {
-    uint16_t carry = (gb.AF_bytes.F & FLAG_C) ? 1 : 0;
-    uint16_t result = static_cast<uint16_t>(gb.AF_bytes.A) + static_cast<uint16_t>(gb.DE_bytes.E) + carry;
+    u8 a = gb.AF_bytes.A;
+    u8 e = gb.DE_bytes.E;
+    u8 carry = (gb.AF_bytes.F & FLAG_C) >> 4;
+    u16 result = a + e + carry;
 
-    gb.AF_bytes.F = 0; // clear all flags
-    gb.AF_bytes.F |= ((result & 0xFF) == 0) * FLAG_Z; // Z flag if result is 0
-    gb.AF_bytes.F |= (((gb.AF_bytes.A & 0x0F) + (gb.DE_bytes.E & 0x0F) + carry) > 0x0F) * FLAG_H; // H flag if carry from bit 4
-    gb.AF_bytes.F |= (result > 0xFF) * FLAG_C; // C flag if carry (result > 255)
-
-    gb.AF_bytes.A = static_cast<u8>(result & 0xFF); // store low 8 bits of result in A
+    gb.AF_bytes.F = ((result & 0xFF) == 0) * FLAG_Z | (((a & 0x0F) + (e & 0x0F) + carry) > 0x0F) * FLAG_H | (result > 0xFF) * FLAG_C;
+    gb.AF_bytes.A = static_cast<u8>(result);
 
     gb.PC += 1;
     return 4;
@@ -1784,15 +1761,13 @@ u8 op_0x8B_ADC_A_E(Gameboy& gb)
 
 u8 op_0x8C_ADC_A_H(Gameboy& gb)
 {
-    uint16_t carry = (gb.AF_bytes.F & FLAG_C) ? 1 : 0;
-    uint16_t result = static_cast<uint16_t>(gb.AF_bytes.A) + static_cast<uint16_t>(gb.HL_bytes.H) + carry;
+    u8 a = gb.AF_bytes.A;
+    u8 h = gb.HL_bytes.H;
+    u8 carry = (gb.AF_bytes.F & FLAG_C) >> 4;
+    u16 result = a + h + carry;
 
-    gb.AF_bytes.F = 0; // clear all flags
-    gb.AF_bytes.F |= ((result & 0xFF) == 0) * FLAG_Z; // Z flag if result is 0
-    gb.AF_bytes.F |= (((gb.AF_bytes.A & 0x0F) + (gb.HL_bytes.H & 0x0F) + carry) > 0x0F) * FLAG_H; // H flag if carry from bit 4
-    gb.AF_bytes.F |= (result > 0xFF) * FLAG_C; // C flag if carry (result > 255)
-
-    gb.AF_bytes.A = static_cast<u8>(result & 0xFF); // store low 8 bits of result in A
+    gb.AF_bytes.F = ((result & 0xFF) == 0) * FLAG_Z | (((a & 0x0F) + (h & 0x0F) + carry) > 0x0F) * FLAG_H | (result > 0xFF) * FLAG_C;
+    gb.AF_bytes.A = static_cast<u8>(result);
 
     gb.PC += 1;
     return 4;
@@ -1800,15 +1775,13 @@ u8 op_0x8C_ADC_A_H(Gameboy& gb)
 
 u8 op_0x8D_ADC_A_L(Gameboy& gb)
 {
-    uint16_t carry = (gb.AF_bytes.F & FLAG_C) ? 1 : 0;
-    uint16_t result = static_cast<uint16_t>(gb.AF_bytes.A) + static_cast<uint16_t>(gb.HL_bytes.L) + carry;
+    u8 a = gb.AF_bytes.A;
+    u8 l = gb.HL_bytes.L;
+    u8 carry = (gb.AF_bytes.F & FLAG_C) >> 4;
+    u16 result = a + l + carry;
 
-    gb.AF_bytes.F = 0; // clear all flags
-    gb.AF_bytes.F |= ((result & 0xFF) == 0) * FLAG_Z; // Z flag if result is 0
-    gb.AF_bytes.F |= (((gb.AF_bytes.A & 0x0F) + (gb.HL_bytes.L & 0x0F) + carry) > 0x0F) * FLAG_H; // H flag if carry from bit 4
-    gb.AF_bytes.F |= (result > 0xFF) * FLAG_C; // C flag if carry (result > 255)
-
-    gb.AF_bytes.A = static_cast<u8>(result & 0xFF); // store low 8 bits of result in A
+    gb.AF_bytes.F = ((result & 0xFF) == 0) * FLAG_Z | (((a & 0x0F) + (l & 0x0F) + carry) > 0x0F) * FLAG_H | (result > 0xFF) * FLAG_C;
+    gb.AF_bytes.A = static_cast<u8>(result);
 
     gb.PC += 1;
     return 4;
@@ -1816,16 +1789,13 @@ u8 op_0x8D_ADC_A_L(Gameboy& gb)
 
 u8 op_0x8E_ADC_A_HL(Gameboy& gb)
 {
-    uint16_t carry = (gb.AF_bytes.F & FLAG_C) ? 1 : 0;
-    uint16_t value = static_cast<uint16_t>(gb.read8(gb.HL));
-    uint16_t result = static_cast<uint16_t>(gb.AF_bytes.A) + value + carry;
+    u8 a = gb.AF_bytes.A;
+    u8 value = gb.read8(gb.HL);
+    u8 carry = (gb.AF_bytes.F & FLAG_C) >> 4;
+    u16 result = a + value + carry;
 
-    gb.AF_bytes.F = 0; // clear all flags
-    gb.AF_bytes.F |= ((result & 0xFF) == 0) * FLAG_Z; // Z flag if result is 0
-    gb.AF_bytes.F |= (((gb.AF_bytes.A & 0x0F) + (value & 0x0F) + carry) > 0x0F) * FLAG_H; // H flag if carry from bit 4
-    gb.AF_bytes.F |= (result > 0xFF) * FLAG_C; // C flag if carry (result > 255)
-
-    gb.AF_bytes.A = static_cast<u8>(result & 0xFF); // store low 8 bits of result in A
+    gb.AF_bytes.F = ((result & 0xFF) == 0) * FLAG_Z | (((a & 0x0F) + (value & 0x0F) + carry) > 0x0F) * FLAG_H | (result > 0xFF) * FLAG_C;
+    gb.AF_bytes.A = static_cast<u8>(result);
 
     gb.PC += 1;
     return 8;
@@ -1833,15 +1803,12 @@ u8 op_0x8E_ADC_A_HL(Gameboy& gb)
 
 u8 op_0x8F_ADC_A_A(Gameboy& gb)
 {
-    uint16_t carry = (gb.AF_bytes.F & FLAG_C) ? 1 : 0;
-    uint16_t result = static_cast<uint16_t>(gb.AF_bytes.A) + static_cast<uint16_t>(gb.AF_bytes.A) + carry;
+    u8 a = gb.AF_bytes.A;
+    u8 carry = (gb.AF_bytes.F & FLAG_C) >> 4;
+    u16 result = (a << 1) + carry;
 
-    gb.AF_bytes.F = 0; // clear all flags
-    gb.AF_bytes.F |= ((result & 0xFF) == 0) * FLAG_Z; // Z flag if result is 0
-    gb.AF_bytes.F |= (((gb.AF_bytes.A & 0x0F) + (gb.AF_bytes.A & 0x0F) + carry) > 0x0F) * FLAG_H; // H flag if carry from bit 4
-    gb.AF_bytes.F |= (result > 0xFF) * FLAG_C; // C flag if carry (result > 255)
-
-    gb.AF_bytes.A = static_cast<u8>(result & 0xFF); // store low 8 bits of result in A
+    gb.AF_bytes.F = ((result & 0xFF) == 0) * FLAG_Z | (((a & 0x0F) << 1) + carry > 0x0F) * FLAG_H | (result > 0xFF) * FLAG_C;
+    gb.AF_bytes.A = static_cast<u8>(result);
 
     gb.PC += 1;
     return 4;
@@ -2122,16 +2089,13 @@ u8 op_0xF6_OR_A_u8(Gameboy& gb)
 
 u8 op_0xDE_SBC_A_u8(Gameboy& gb)
 {
+    u8 a = gb.AF_bytes.A;
     u8 value = gb.read8(gb.PC + 1);
-    u8 carry = (gb.AF_bytes.F & FLAG_C) ? 1 : 0;
-    uint16_t result = static_cast<uint16_t>(gb.AF_bytes.A) - static_cast<uint16_t>(value) - carry;
+    u8 carry = (gb.AF_bytes.F & FLAG_C) >> 4;
+    u16 result = a - value - carry;
 
-    gb.AF_bytes.F = FLAG_N; // set N flag, clear others
-    gb.AF_bytes.F |= ((result & 0xFF) == 0) ? FLAG_Z : 0; // Z flag if result is 0
-    gb.AF_bytes.F |= ((gb.AF_bytes.A & 0x0F) < ((value & 0x0F) + carry)) ? FLAG_H : 0; // H flag if borrow from bit 4
-    gb.AF_bytes.F |= (result > 0xFF) ? FLAG_C : 0; // C flag if borrow
-
-    gb.AF_bytes.A = static_cast<u8>(result & 0xFF);
+    gb.AF_bytes.F = FLAG_N | ((result & 0xFF) == 0) * FLAG_Z | ((a & 0x0F) < ((value & 0x0F) + carry)) * FLAG_H | (result > 0xFF) * FLAG_C;
+    gb.AF_bytes.A = static_cast<u8>(result);
 
     gb.PC += 2;
     return 8;
@@ -2747,12 +2711,10 @@ u8 op_0xAC_XOR_A_H(Gameboy& gb)
 u8 op_0xCB_0x00_RLC_B(Gameboy& gb)
 {
     u8 value = gb.BC_bytes.B;
-    u8 result = (value << 1) | (value >> 7); // Rotate left
-    gb.BC_bytes.B = result;
+    gb.BC_bytes.B = (value << 1) | (value >> 7); // Rotate left
 
-    gb.AF_bytes.F = 0; // clear all flags
-    gb.AF_bytes.F |= (result == 0) * FLAG_Z; // Z flag if result is 0
-    gb.AF_bytes.F |= (value >> 7) * FLAG_C; // C flag if bit 7 of original value was set
+    // clear all flags, then set Z if B is 0, and C if bit 7 was set
+    gb.AF_bytes.F = ((gb.BC_bytes.B == 0) ? FLAG_Z : 0) | ((value >> 7) ? FLAG_C : 0);
 
     gb.PC += 2;
     return 8;
@@ -2761,12 +2723,10 @@ u8 op_0xCB_0x00_RLC_B(Gameboy& gb)
 u8 op_0xCB_0x01_RLC_C(Gameboy& gb)
 {
     u8 value = gb.BC_bytes.C;
-    u8 result = (value << 1) | (value >> 7); // Rotate left
-    gb.BC_bytes.C = result;
+    gb.BC_bytes.C = (value << 1) | (value >> 7); // Rotate left
 
-    gb.AF_bytes.F = 0; // clear all flags
-    gb.AF_bytes.F |= (result == 0) * FLAG_Z; // Z flag if result is 0
-    gb.AF_bytes.F |= (value >> 7) * FLAG_C; // C flag if bit 7 of original value was set
+    // clear all flags, then set Z if C is 0, and C if bit 7 was set
+    gb.AF_bytes.F = ((gb.BC_bytes.C == 0) ? FLAG_Z : 0) | ((value >> 7) ? FLAG_C : 0);
 
     gb.PC += 2;
     return 8;
@@ -2775,12 +2735,10 @@ u8 op_0xCB_0x01_RLC_C(Gameboy& gb)
 u8 op_0xCB_0x02_RLC_D(Gameboy& gb)
 {
     u8 value = gb.DE_bytes.D;
-    u8 result = (value << 1) | (value >> 7); // Rotate left
-    gb.DE_bytes.D = result;
+    gb.DE_bytes.D = (value << 1) | (value >> 7); // Rotate left
 
-    gb.AF_bytes.F = 0; // clear all flags
-    gb.AF_bytes.F |= (result == 0) * FLAG_Z; // Z flag if result is 0
-    gb.AF_bytes.F |= (value >> 7) * FLAG_C; // C flag if bit 7 of original value was set
+    // clear all flags, then set Z if D is 0, and C if bit 7 was set
+    gb.AF_bytes.F = ((gb.DE_bytes.D == 0) ? FLAG_Z : 0) | ((value >> 7) ? FLAG_C : 0);
 
     gb.PC += 2;
     return 8;
@@ -2789,12 +2747,10 @@ u8 op_0xCB_0x02_RLC_D(Gameboy& gb)
 u8 op_0xCB_0x03_RLC_E(Gameboy& gb)
 {
     u8 value = gb.DE_bytes.E;
-    u8 result = (value << 1) | (value >> 7); // Rotate left
-    gb.DE_bytes.E = result;
+    gb.DE_bytes.E = (value << 1) | (value >> 7); // Rotate left
 
-    gb.AF_bytes.F = 0; // clear all flags
-    gb.AF_bytes.F |= (result == 0) * FLAG_Z; // Z flag if result is 0
-    gb.AF_bytes.F |= (value >> 7) * FLAG_C; // C flag if bit 7 of original value was set
+    // clear all flags, then set Z if E is 0, and C if bit 7 was set
+    gb.AF_bytes.F = ((gb.DE_bytes.E == 0) ? FLAG_Z : 0) | ((value >> 7) ? FLAG_C : 0);
 
     gb.PC += 2;
     return 8;
@@ -2803,12 +2759,10 @@ u8 op_0xCB_0x03_RLC_E(Gameboy& gb)
 u8 op_0xCB_0x04_RLC_H(Gameboy& gb)
 {
     u8 value = gb.HL_bytes.H;
-    u8 result = (value << 1) | (value >> 7); // Rotate left
-    gb.HL_bytes.H = result;
+    gb.HL_bytes.H = (value << 1) | (value >> 7); // Rotate left
 
-    gb.AF_bytes.F = 0; // clear all flags
-    gb.AF_bytes.F |= (result == 0) * FLAG_Z; // Z flag if result is 0
-    gb.AF_bytes.F |= (value >> 7) * FLAG_C; // C flag if bit 7 of original value was set
+    // clear all flags, then set Z if H is 0, and C if bit 7 was set
+    gb.AF_bytes.F = ((gb.HL_bytes.H == 0) ? FLAG_Z : 0) | ((value >> 7) ? FLAG_C : 0);
 
     gb.PC += 2;
     return 8;
@@ -2817,12 +2771,10 @@ u8 op_0xCB_0x04_RLC_H(Gameboy& gb)
 u8 op_0xCB_0x05_RLC_L(Gameboy& gb)
 {
     u8 value = gb.HL_bytes.L;
-    u8 result = (value << 1) | (value >> 7); // Rotate left
-    gb.HL_bytes.L = result;
+    gb.HL_bytes.L = (value << 1) | (value >> 7); // Rotate left
 
-    gb.AF_bytes.F = 0; // clear all flags
-    gb.AF_bytes.F |= (result == 0) * FLAG_Z; // Z flag if result is 0
-    gb.AF_bytes.F |= (value >> 7) * FLAG_C; // C flag if bit 7 of original value was set
+    // clear all flags, then set Z if L is 0, and C if bit 7 was set
+    gb.AF_bytes.F = ((gb.HL_bytes.L == 0) ? FLAG_Z : 0) | ((value >> 7) ? FLAG_C : 0);
 
     gb.PC += 2;
     return 8;
@@ -2834,9 +2786,8 @@ u8 op_0xCB_0x06_RLC_HL(Gameboy& gb)
     u8 result = (value << 1) | (value >> 7); // Rotate left
     gb.write8(gb.HL, result);
 
-    gb.AF_bytes.F = 0; // clear all flags
-    gb.AF_bytes.F |= (result == 0) * FLAG_Z; // Z flag if result is 0
-    gb.AF_bytes.F |= (value >> 7) * FLAG_C; // C flag if bit 7 of original value was set
+    // clear all flags, then set Z if HL is 0, and C if bit 7 was set
+    gb.AF_bytes.F = ((result == 0) ? FLAG_Z : 0) | ((value >> 7) ? FLAG_C : 0);
 
     gb.PC += 2;
     return 16;
@@ -2845,12 +2796,10 @@ u8 op_0xCB_0x06_RLC_HL(Gameboy& gb)
 u8 op_0xCB_0x07_RLC_A(Gameboy& gb)
 {
     u8 value = gb.AF_bytes.A;
-    u8 result = (value << 1) | (value >> 7); // Rotate left
-    gb.AF_bytes.A = result;
+    gb.AF_bytes.A = (value << 1) | (value >> 7); // Rotate left
 
-    gb.AF_bytes.F = 0; // clear all flags
-    gb.AF_bytes.F |= (result == 0) * FLAG_Z; // Z flag if result is 0
-    gb.AF_bytes.F |= (value >> 7) * FLAG_C; // C flag if bit 7 of original value was set
+    // clear all flags, then set Z if A is 0, and C if bit 7 was set
+    gb.AF_bytes.F = ((gb.AF_bytes.A == 0) ? FLAG_Z : 0) | ((value >> 7) ? FLAG_C : 0);
 
     gb.PC += 2;
     return 8;
@@ -2859,12 +2808,10 @@ u8 op_0xCB_0x07_RLC_A(Gameboy& gb)
 u8 op_0xCB_0x08_RRC_B(Gameboy& gb)
 {
     u8 value = gb.BC_bytes.B;
-    u8 result = (value >> 1) | (value << 7); // Rotate right
-    gb.BC_bytes.B = result;
+    gb.BC_bytes.B = (value >> 1) | (value << 7); // Rotate right
 
-    gb.AF_bytes.F = 0; // clear all flags
-    gb.AF_bytes.F |= (result == 0) * FLAG_Z; // Z flag if result is 0
-    gb.AF_bytes.F |= (value & 0x01) * FLAG_C; // C flag if bit 0 of original value was set
+    // clear all flags, then set Z if B is 0, and C if bit 0 was set
+    gb.AF_bytes.F = ((gb.BC_bytes.B == 0) ? FLAG_Z : 0) | ((value & 0x01) ? FLAG_C : 0);
 
     gb.PC += 2;
     return 8;
@@ -2873,12 +2820,10 @@ u8 op_0xCB_0x08_RRC_B(Gameboy& gb)
 u8 op_0xCB_0x09_RRC_C(Gameboy& gb)
 {
     u8 value = gb.BC_bytes.C;
-    u8 result = (value >> 1) | (value << 7); // Rotate right
-    gb.BC_bytes.C = result;
+    gb.BC_bytes.C = (value >> 1) | (value << 7); // Rotate right
 
-    gb.AF_bytes.F = 0; // clear all flags
-    gb.AF_bytes.F |= (result == 0) * FLAG_Z; // Z flag if result is 0
-    gb.AF_bytes.F |= (value & 0x01) * FLAG_C; // C flag if bit 0 of original value was set
+    // clear all flags, then set Z if C is 0, and C if bit 0 was set
+    gb.AF_bytes.F = ((gb.BC_bytes.C == 0) ? FLAG_Z : 0) | ((value & 0x01) ? FLAG_C : 0);
 
     gb.PC += 2;
     return 8;
@@ -2887,12 +2832,10 @@ u8 op_0xCB_0x09_RRC_C(Gameboy& gb)
 u8 op_0xCB_0x0A_RRC_D(Gameboy& gb)
 {
     u8 value = gb.DE_bytes.D;
-    u8 result = (value >> 1) | (value << 7); // Rotate right
-    gb.DE_bytes.D = result;
+    gb.DE_bytes.D = (value >> 1) | (value << 7); // Rotate right
 
-    gb.AF_bytes.F = 0; // clear all flags
-    gb.AF_bytes.F |= (result == 0) * FLAG_Z; // Z flag if result is 0
-    gb.AF_bytes.F |= (value & 0x01) * FLAG_C; // C flag if bit 0 of original value was set
+    // clear all flags, then set Z if D is 0, and C if bit 0 was set
+    gb.AF_bytes.F = ((gb.DE_bytes.D == 0) ? FLAG_Z : 0) | ((value & 0x01) ? FLAG_C : 0);
 
     gb.PC += 2;
     return 8;
@@ -2901,12 +2844,10 @@ u8 op_0xCB_0x0A_RRC_D(Gameboy& gb)
 u8 op_0xCB_0x0B_RRC_E(Gameboy& gb)
 {
     u8 value = gb.DE_bytes.E;
-    u8 result = (value >> 1) | (value << 7); // Rotate right
-    gb.DE_bytes.E = result;
+    gb.DE_bytes.E = (value >> 1) | (value << 7); // Rotate right
 
-    gb.AF_bytes.F = 0; // clear all flags
-    gb.AF_bytes.F |= (result == 0) * FLAG_Z; // Z flag if result is 0
-    gb.AF_bytes.F |= (value & 0x01) * FLAG_C; // C flag if bit 0 of original value was set
+    // clear all flags, then set Z if E is 0, and C if bit 0 was set
+    gb.AF_bytes.F = ((gb.DE_bytes.E == 0) ? FLAG_Z : 0) | ((value & 0x01) ? FLAG_C : 0);
 
     gb.PC += 2;
     return 8;
@@ -2915,12 +2856,10 @@ u8 op_0xCB_0x0B_RRC_E(Gameboy& gb)
 u8 op_0xCB_0x0C_RRC_H(Gameboy& gb)
 {
     u8 value = gb.HL_bytes.H;
-    u8 result = (value >> 1) | (value << 7); // Rotate right
-    gb.HL_bytes.H = result;
+    gb.HL_bytes.H = (value >> 1) | (value << 7); // Rotate right
 
-    gb.AF_bytes.F = 0; // clear all flags
-    gb.AF_bytes.F |= (result == 0) * FLAG_Z; // Z flag if result is 0
-    gb.AF_bytes.F |= (value & 0x01) * FLAG_C; // C flag if bit 0 of original value was set
+    // clear all flags, then set Z if H is 0, and C if bit 0 was set
+    gb.AF_bytes.F = ((gb.HL_bytes.H == 0) ? FLAG_Z : 0) | ((value & 0x01) ? FLAG_C : 0);
 
     gb.PC += 2;
     return 8;
@@ -2929,12 +2868,10 @@ u8 op_0xCB_0x0C_RRC_H(Gameboy& gb)
 u8 op_0xCB_0x0D_RRC_L(Gameboy& gb)
 {
     u8 value = gb.HL_bytes.L;
-    u8 result = (value >> 1) | (value << 7); // Rotate right
-    gb.HL_bytes.L = result;
+    gb.HL_bytes.L = (value >> 1) | (value << 7); // Rotate right
 
-    gb.AF_bytes.F = 0; // clear all flags
-    gb.AF_bytes.F |= (result == 0) * FLAG_Z; // Z flag if result is 0
-    gb.AF_bytes.F |= (value & 0x01) * FLAG_C; // C flag if bit 0 of original value was set
+    // clear all flags, then set Z if L is 0, and C if bit 0 was set
+    gb.AF_bytes.F = ((gb.HL_bytes.L == 0) ? FLAG_Z : 0) | ((value & 0x01) ? FLAG_C : 0);
 
     gb.PC += 2;
     return 8;
@@ -2946,9 +2883,8 @@ u8 op_0xCB_0x0E_RRC_HL(Gameboy& gb)
     u8 result = (value >> 1) | (value << 7); // Rotate right
     gb.write8(gb.HL, result);
 
-    gb.AF_bytes.F = 0; // clear all flags
-    gb.AF_bytes.F |= (result == 0) * FLAG_Z; // Z flag if result is 0
-    gb.AF_bytes.F |= (value & 0x01) * FLAG_C; // C flag if bit 0 of original value was set
+    // clear all flags, then set Z if HL is 0, and C if bit 0 was set
+    gb.AF_bytes.F = ((result == 0) ? FLAG_Z : 0) | ((value & 0x01) ? FLAG_C : 0);
 
     gb.PC += 2;
     return 16;
@@ -2957,12 +2893,10 @@ u8 op_0xCB_0x0E_RRC_HL(Gameboy& gb)
 u8 op_0xCB_0x0F_RRC_A(Gameboy& gb)
 {
     u8 value = gb.AF_bytes.A;
-    u8 result = (value >> 1) | (value << 7); // Rotate right
-    gb.AF_bytes.A = result;
+    gb.AF_bytes.A = (value >> 1) | (value << 7); // Rotate right
 
-    gb.AF_bytes.F = 0; // clear all flags
-    gb.AF_bytes.F |= (result == 0) * FLAG_Z; // Z flag if result is 0
-    gb.AF_bytes.F |= (value & 0x01) * FLAG_C; // C flag if bit 0 of original value was set
+    // clear all flags, then set Z if A is 0, and C if bit 0 was set
+    gb.AF_bytes.F = ((gb.AF_bytes.A == 0) ? FLAG_Z : 0) | ((value & 0x01) ? FLAG_C : 0);
 
     gb.PC += 2;
     return 8;
