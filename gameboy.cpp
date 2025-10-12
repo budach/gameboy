@@ -1,6 +1,8 @@
 #include "gameboy.h"
 #include "opcodes.h"
 
+#include "raylib.h"
+
 Gameboy::Gameboy(const std::string& path_rom)
 {
     // init memory
@@ -32,12 +34,58 @@ Gameboy::Gameboy(const std::string& path_rom)
     SP = 0xFFFE;
     PC = 0x0100;
 
+    // set hardware registers to initial values after boot ROM execution
+    // from https://gbdev.io/pandocs/Power_Up_Sequence.html
+    memory[0xFF00] = 0xCF;
+    memory[0xFF01] = 0x00;
+    memory[0xFF02] = 0x7E;
+    memory[0xFF04] = 0xAB;
+    memory[0xFF05] = 0x00;
+    memory[0xFF06] = 0x00;
+    memory[0xFF07] = 0xF8;
+    memory[0xFF0F] = 0xE1;
+    memory[0xFF10] = 0x80;
+    memory[0xFF11] = 0xBF;
+    memory[0xFF12] = 0xF3;
+    memory[0xFF13] = 0xFF;
+    memory[0xFF14] = 0xBF;
+    memory[0xFF16] = 0x3F;
+    memory[0xFF17] = 0x00;
+    memory[0xFF18] = 0xFF;
+    memory[0xFF19] = 0xBF;
+    memory[0xFF1A] = 0x7F;
+    memory[0xFF1B] = 0xFF;
+    memory[0xFF1C] = 0x9F;
+    memory[0xFF1D] = 0xFF;
+    memory[0xFF1E] = 0xBF;
+    memory[0xFF20] = 0xFF;
+    memory[0xFF21] = 0x00;
+    memory[0xFF22] = 0x00;
+    memory[0xFF23] = 0xBF;
+    memory[0xFF24] = 0x77;
+    memory[0xFF25] = 0xF3;
+    memory[0xFF26] = 0xF1;
+    memory[0xFF40] = 0x91;
+    memory[0xFF41] = 0x85;
+    memory[0xFF42] = 0x00;
+    memory[0xFF43] = 0x00;
+    memory[0xFF44] = 0x00;
+    memory[0xFF45] = 0x00;
+    memory[0xFF46] = 0xFF;
+    memory[0xFF47] = 0xFC;
+    memory[0xFF48] = 0x00;
+    memory[0xFF49] = 0x00;
+    memory[0xFF4A] = 0x00;
+    memory[0xFF4B] = 0x00;
+    memory[0xFFFF] = 0x00;
+
     // init misc
 
     IME = false;
     IME_scheduled = false;
     halted = false;
     halt_bug = false;
+    joypad_state = 0xFF; // all buttons unpressed
 
     // init opcode table
 
@@ -550,9 +598,31 @@ Gameboy::Gameboy(const std::string& path_rom)
     cb_opcodes[0xFF] = op_0xCB_0xFF_SET_7_A;
 }
 
+void Gameboy::request_interrupt(u8 bit)
+{
+    write8(0xFF0F, read8(0xFF0F) | (1 << bit));
+}
+
 u8 Gameboy::read8(u16 addr) const
 {
-    return memory[addr];
+    if (addr == 0xFF00) {
+        // joypad register
+
+        u8 select = memory[0xFF00] & 0x30; // bits 4 and 5 are select bits
+        u8 result = 0xC0 | select | 0x0F; // upper 2 bits set, lower 4 bits set
+
+        if (!(select & 0x10)) { // direction buttons selected
+            result = (result & 0xF0) | (joypad_state & 0x0F);
+        }
+
+        if (!(select & 0x20)) { // button buttons selected
+            result = (result & 0xF0) | ((joypad_state >> 4) & 0x0F);
+        }
+
+        return result;
+    } else {
+        return memory[addr];
+    }
 }
 
 u16 Gameboy::read16(u16 addr) const
@@ -562,7 +632,12 @@ u16 Gameboy::read16(u16 addr) const
 
 void Gameboy::write8(u16 addr, u8 value)
 {
-    memory[addr] = value;
+    if (addr == 0xFF00) {
+        // joypad register, only bits 4-5 are writable
+        memory[0xFF00] = (memory[0xFF00] & 0xCF) | (value & 0x30);
+    } else {
+        memory[addr] = value;
+    }
 }
 
 void Gameboy::write16(u16 addr, u16 value)
@@ -595,9 +670,53 @@ u8 Gameboy::run_opcode()
     return cycles;
 }
 
+void Gameboy::update_inputs()
+{
+    u8 new_state = 0xFF; // all buttons unpressed
+
+    if (IsKeyDown(KEY_RIGHT)) {
+        new_state &= ~(1 << 0);
+    }
+    if (IsKeyDown(KEY_LEFT)) {
+        new_state &= ~(1 << 1);
+    }
+    if (IsKeyDown(KEY_UP)) {
+        new_state &= ~(1 << 2);
+    }
+    if (IsKeyDown(KEY_DOWN)) {
+        new_state &= ~(1 << 3);
+    }
+
+    if (IsKeyDown(KEY_A)) {
+        new_state &= ~(1 << 4); // A button
+    }
+    if (IsKeyDown(KEY_S)) {
+        new_state &= ~(1 << 5); // B button
+    }
+    if (IsKeyDown(KEY_SPACE)) {
+        new_state &= ~(1 << 6); // Select
+    }
+    if (IsKeyDown(KEY_ENTER)) {
+        new_state &= ~(1 << 7); // Start
+    }
+
+    u8 pressed = joypad_state & ~new_state; // bits that went from 1 to 0
+    joypad_state = new_state; // save new state
+
+    // check if joypad interrupt should be requested
+    if (pressed) {
+        u8 joyp = memory[0xFF00];
+        bool dir_selected = !(joyp & 0x10);
+        bool btn_selected = !(joyp & 0x20);
+        if ((dir_selected && (pressed & 0x0F)) || (btn_selected && (pressed & 0xF0))) {
+            request_interrupt(4);
+        }
+    }
+}
+
 void Gameboy::run_one_frame()
 {
-    // update_inputs();
+    update_inputs();
 
     u32 cycles_this_frame = 0;
     while (cycles_this_frame < 70224) {

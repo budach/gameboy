@@ -2,7 +2,7 @@
 
 int main()
 {
-    Gameboy gb("roms/Tetris.gb  ");
+    Gameboy gb("roms/Tetris.gb");
 
     while (1) {
         gb.run_one_frame();
