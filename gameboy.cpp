@@ -1,4 +1,6 @@
 #include <bit>
+#include <iomanip>
+#include <iostream>
 
 #include "gameboy.h"
 #include "opcodes.h"
@@ -26,6 +28,18 @@ Gameboy::Gameboy(const std::string& path_rom)
     }
 
     std::copy(cartridge.begin(), cartridge.end(), memory.begin());
+
+    // read ROM header info
+
+    header_bank_type = read8(0x147);
+    header_rom_banks = read8(0x148);
+    header_ram_banks = read8(0x149);
+    for (int i = 0x134; i <= 0x143; i++) {
+        char c = read8(i);
+        if (c == 0)
+            break;
+        header_title.push_back(c);
+    }
 
     // init registers (state after boot ROM)
 
@@ -600,6 +614,26 @@ Gameboy::Gameboy(const std::string& path_rom)
     cb_opcodes[0xFD] = op_0xCB_0xFD_SET_7_L;
     cb_opcodes[0xFE] = op_0xCB_0xFE_SET_7_HL;
     cb_opcodes[0xFF] = op_0xCB_0xFF_SET_7_A;
+
+    init_graphics();
+}
+
+void Gameboy::init_graphics()
+{
+    std::ostringstream window_title;
+    window_title << "Gameboy Emulator - " << header_title << " - MBC: 0x"
+                 << std::hex << (int)header_bank_type << " - ROM_BANKS: "
+                 << (int)header_rom_banks << " - RAM_BANKS: " << (int)header_ram_banks;
+
+    SetConfigFlags(FLAG_VSYNC_HINT);
+    InitWindow(SCREEN_WIDTH * SCREEN_SCALE, SCREEN_HEIGHT * SCREEN_SCALE, window_title.str().c_str());
+    SetTargetFPS(60);
+    SetExitKey(0); // Disable ESC exit key
+}
+
+void Gameboy::cleanup_graphics()
+{
+    CloseWindow();
 }
 
 void Gameboy::request_interrupt(u8 bit)
@@ -855,5 +889,13 @@ void Gameboy::run_one_frame()
 
 void Gameboy::render_screen()
 {
-    // todo
+    BeginDrawing();
+    ClearBackground(BLACK);
+    DrawText(TextFormat("FPS: %d", GetFPS()), 5, 3, 32, ORANGE);
+    EndDrawing();
+}
+
+Gameboy::~Gameboy()
+{
+    cleanup_graphics();
 }

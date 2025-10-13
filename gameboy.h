@@ -21,6 +21,9 @@ constexpr u16 TIMA = 0xFF05; // address of timer counter
 constexpr u16 TMA = 0xFF06; // address of timer modulator
 constexpr u16 TMC = 0xFF07; // address of timer frequency and on/off
 constexpr int CLOCKSPEED = 4194304; // 4.194304 MHz
+constexpr int SCREEN_WIDTH = 160;
+constexpr int SCREEN_HEIGHT = 144;
+constexpr int SCREEN_SCALE = 5;
 
 struct Gameboy {
 
@@ -33,6 +36,7 @@ struct Gameboy {
 
     std::vector<u8> memory; // 64KB addressable memory
     std::vector<u8> cartridge; // full cartridge content
+    std::string header_title; // game title from ROM header
 
     int timer_counter; // counts CPU cycles for timer
     int divider_counter; // counts CPU cycles for divider register
@@ -72,6 +76,9 @@ struct Gameboy {
     u16 SP; // stack pointer
     u16 PC; // program counter
     u8 joypad_state; // current button states
+    u8 header_bank_type; // MBC type from ROM header
+    u8 header_rom_banks; // number of ROM banks from ROM header
+    u8 header_ram_banks; // number of RAM banks from ROM header
     bool ime; // interrupt master enable
     bool ime_scheduled; // whether to enable IME after next instruction
     bool halted; // whether the CPU is halted
@@ -82,6 +89,7 @@ struct Gameboy {
     /* ----------------- */
 
     Gameboy(const std::string& path_rom);
+    ~Gameboy();
 
     u8 read8(u16 addr) const;
     u16 read16(u16 addr) const;
@@ -95,4 +103,6 @@ struct Gameboy {
     void request_interrupt(u8 bit);
     void update_timers(u8 cycles);
     u8 check_interrupts();
+    void init_graphics();
+    void cleanup_graphics();
 };
