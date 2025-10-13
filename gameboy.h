@@ -68,8 +68,8 @@ struct Gameboy {
     u16 SP; // stack pointer
     u16 PC; // program counter
     u8 joypad_state; // current button states
-    bool IME; // interrupt master enable
-    bool IME_scheduled; // whether to enable IME after next instruction
+    bool ime; // interrupt master enable
+    bool ime_scheduled; // whether to enable IME after next instruction
     bool halted; // whether the CPU is halted
     bool halt_bug; // whether the CPU is in halt bug state
 
@@ -89,4 +89,5 @@ struct Gameboy {
     void render_screen();
     void update_inputs();
     void request_interrupt(u8 bit);
+    u8 check_interrupts();
 };

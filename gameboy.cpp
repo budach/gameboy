@@ -1,3 +1,5 @@
+#include <bit>
+
 #include "gameboy.h"
 #include "opcodes.h"
 
@@ -81,8 +83,8 @@ Gameboy::Gameboy(const std::string& path_rom)
 
     // init misc
 
-    IME = false;
-    IME_scheduled = false;
+    ime = false;
+    ime_scheduled = false;
     halted = false;
     halt_bug = false;
     joypad_state = 0xFF; // all buttons unpressed
@@ -652,7 +654,7 @@ u8 Gameboy::run_opcode()
         return 4; // 4 t-cycles
     }
 
-    bool should_enable_IME = IME_scheduled;
+    bool should_enable_ime = ime_scheduled;
     bool had_halt_bug = halt_bug;
 
     u8 opcode = read8(had_halt_bug ? PC + 1 : PC);
@@ -662,9 +664,9 @@ u8 Gameboy::run_opcode()
         halt_bug = false;
     }
 
-    if (should_enable_IME) {
-        IME = true;
-        IME_scheduled = false;
+    if (should_enable_ime) {
+        ime = true;
+        ime_scheduled = false;
     }
 
     return cycles;
@@ -714,6 +716,58 @@ void Gameboy::update_inputs()
     }
 }
 
+u8 Gameboy::check_interrupts()
+{
+    u8 requested = read8(0xFF0F);
+    u8 enabled = read8(0xFFFF);
+    u8 triggered = requested & enabled & 0x1F;
+
+    if (triggered == 0) {
+        return 0;
+    }
+
+    if (halted) {
+        halted = false;
+        halt_bug = false;
+        if (!ime) {
+            return 0;
+        }
+    }
+
+    if (ime) {
+        int bit_idx = std::countr_zero(triggered); // find first set bit
+
+        ime = false;
+        ime_scheduled = false;
+        write8(0xFF0F, requested & ~(1 << bit_idx));
+
+        SP -= 2;
+        write16(SP, PC);
+
+        switch (bit_idx) {
+        case 0:
+            PC = 0x40;
+            break; // V-Blank
+        case 1:
+            PC = 0x48;
+            break; // LCD STAT
+        case 2:
+            PC = 0x50;
+            break; // Timer overflow
+        case 3:
+            PC = 0x58;
+            break; // Serial
+        case 4:
+            PC = 0x60;
+            break; // Joypad
+        }
+
+        return 20; // 20 t-cycles
+    }
+
+    return 0;
+}
+
 void Gameboy::run_one_frame()
 {
     update_inputs();
@@ -721,7 +775,7 @@ void Gameboy::run_one_frame()
     u32 cycles_this_frame = 0;
     while (cycles_this_frame < 70224) {
         u8 cycles = run_opcode();
-        // cycles += check_interrupts();
+        cycles += check_interrupts();
         // update_timers(cycles);
         // ppu_step(cycles);
         cycles_this_frame += cycles;

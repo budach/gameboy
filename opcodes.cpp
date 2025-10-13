@@ -528,8 +528,8 @@ u8 op_0xC3_JP_u16(Gameboy& gb)
 
 u8 op_0xF3_DI(Gameboy& gb)
 {
-    gb.IME = false; // disable interrupts
-    gb.IME_scheduled = false;
+    gb.ime = false; // disable interrupts
+    gb.ime_scheduled = false;
 
     gb.PC += 1;
     return 4;
@@ -582,7 +582,7 @@ u8 op_0xB1_OR_A_C(Gameboy& gb)
 
 u8 op_0xFB_EI(Gameboy& gb)
 {
-    gb.IME_scheduled = true; // enable interrupts after next instruction
+    gb.ime_scheduled = true; // enable interrupts after next instruction
 
     gb.PC += 1;
     return 4;
@@ -912,7 +912,7 @@ u8 op_0xD9_RETI(Gameboy& gb)
 {
     gb.PC = gb.read16(gb.SP); // pop return address from stack into PC
     gb.SP += 2; // increment stack pointer by 2
-    gb.IME = true; // enable interrupts
+    gb.ime = true; // enable interrupts
 
     return 16;
 }
@@ -1590,13 +1590,11 @@ u8 op_0x75_LD_HL_L(Gameboy& gb)
 
 u8 op_0x76_HALT(Gameboy& gb)
 {
-    u8 IE = gb.read8(0xFFFF);
-    u8 IF = gb.read8(0xFF0F);
-    u8 pending = IE & IF & 0x1F;
+    u8 pending = gb.read8(0xFFFF) & gb.read8(0xFF0F) & 0x1F;
 
     // HALT bug: if IME is disabled and an interrupt is already pending
     // PC fails to increment, causing the next byte to be read twice
-    if (!gb.IME && pending) {
+    if (!gb.ime && pending) {
         gb.halt_bug = true;
     } else {
         // Normal case: enter halt state
