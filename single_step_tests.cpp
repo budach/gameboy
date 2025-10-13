@@ -1,5 +1,6 @@
 // testing the json files from https://github.com/SingleStepTests/sm83
 // just before and after, not cycle-by-cycle
+// note: these tests require read8 and write8 to have unrestricted access to memory
 
 #include <filesystem>
 #include <fstream>

@@ -7,10 +7,6 @@
 #include <string>
 #include <vector>
 
-// the current register approach will not work on big-endian machines
-static_assert(std::endian::native == std::endian::little,
-    "This build assumes a little-endian host (std::endian::little)");
-
 using u8 = uint8_t;
 using u16 = uint16_t;
 using u32 = uint32_t;
@@ -20,6 +16,11 @@ constexpr u8 FLAG_Z = 1 << 7; // zero flag
 constexpr u8 FLAG_N = 1 << 6; // subtract flag
 constexpr u8 FLAG_H = 1 << 5; // half carry flag
 constexpr u8 FLAG_C = 1 << 4; // carry flag
+constexpr u16 DIV = 0xFF04; // address of divider register
+constexpr u16 TIMA = 0xFF05; // address of timer counter
+constexpr u16 TMA = 0xFF06; // address of timer modulator
+constexpr u16 TMC = 0xFF07; // address of timer frequency and on/off
+constexpr int CLOCKSPEED = 4194304; // 4.194304 MHz
 
 struct Gameboy {
 
@@ -32,6 +33,9 @@ struct Gameboy {
 
     std::vector<u8> memory; // 64KB addressable memory
     std::vector<u8> cartridge; // full cartridge content
+
+    int timer_counter; // counts CPU cycles for timer
+    int divider_counter; // counts CPU cycles for divider register
 
     union { // registers
         u16 AF;
@@ -89,5 +93,6 @@ struct Gameboy {
     void render_screen();
     void update_inputs();
     void request_interrupt(u8 bit);
+    void update_timers(u8 cycles);
     u8 check_interrupts();
 };

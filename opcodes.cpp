@@ -5428,6 +5428,7 @@ u8 op_0xCB_0xEF_SET_5_A(Gameboy& gb)
 u8 op_0x10_STOP(Gameboy& gb)
 {
     // not a real implementation, but apparently no licensed games use this
+    gb.write8(0xFF04, 0); // reset DIV register
     gb.PC += 1;
     return 4;
 }

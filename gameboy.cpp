@@ -88,6 +88,8 @@ Gameboy::Gameboy(const std::string& path_rom)
     halted = false;
     halt_bug = false;
     joypad_state = 0xFF; // all buttons unpressed
+    timer_counter = 1024; // CLOCKSPEED / frequency (4096 Hz default)
+    divider_counter = 0; // DIV increments at 16384 Hz
 
     // init opcode table
 
@@ -637,6 +639,30 @@ void Gameboy::write8(u16 addr, u8 value)
     if (addr == 0xFF00) {
         // joypad register, only bits 4-5 are writable
         memory[0xFF00] = (memory[0xFF00] & 0xCF) | (value & 0x30);
+    } else if (addr == DIV) {
+        // divider register, writing any value resets it to 0
+        memory[DIV] = 0;
+    } else if (addr == TMC) {
+        // timer control register
+        u8 old_freq = memory[TMC] & 0x3; // bits 0-1
+        memory[TMC] = value;
+        u8 new_freq = value & 0x3;
+        if (old_freq != new_freq) {
+            switch (new_freq) {
+            case 0:
+                timer_counter = 1024;
+                break; // 4096 Hz
+            case 1:
+                timer_counter = 16;
+                break; // 262144 Hz
+            case 2:
+                timer_counter = 64;
+                break; // 65536 Hz
+            case 3:
+                timer_counter = 256;
+                break; // 16384 Hz
+            }
+        }
     } else {
         memory[addr] = value;
     }
@@ -768,6 +794,51 @@ u8 Gameboy::check_interrupts()
     return 0;
 }
 
+void Gameboy::update_timers(u8 cycles)
+{
+    // of interest for better accuracy:
+    // https://github.com/Ashiepaws/GBEDG/blob/master/timers/index.md
+
+    divider_counter += cycles;
+    if (divider_counter >= 256) {
+        divider_counter -= 256;
+        memory[0xFF04]++; // write8 would reset it to 0
+    }
+
+    // timer enabled if bit 2 of TMC is set
+    if (read8(TMC) & (1 << 2)) {
+
+        timer_counter -= cycles;
+
+        if (timer_counter <= 0) {
+
+            // reset clock based on frequency
+            switch (read8(TMC) & 0x3) {
+            case 0:
+                timer_counter += 1024;
+                break; // 4096 Hz
+            case 1:
+                timer_counter += 16;
+                break; // 262144 Hz
+            case 2:
+                timer_counter += 64;
+                break; // 65536 Hz
+            case 3:
+                timer_counter += 256;
+                break; // 16384 Hz
+            }
+
+            // check for timer overflow interrupt
+            if (read8(TIMA) == 255) {
+                write8(TIMA, read8(TMA));
+                request_interrupt(2);
+            } else {
+                write8(TIMA, read8(TIMA) + 1);
+            }
+        }
+    }
+}
+
 void Gameboy::run_one_frame()
 {
     update_inputs();
@@ -776,7 +847,7 @@ void Gameboy::run_one_frame()
     while (cycles_this_frame < 70224) {
         u8 cycles = run_opcode();
         cycles += check_interrupts();
-        // update_timers(cycles);
+        update_timers(cycles);
         // ppu_step(cycles);
         cycles_this_frame += cycles;
     }
