@@ -12,6 +12,12 @@ Gameboy::Gameboy(const std::string& path_rom)
     // init memory
 
     memory.resize(0x10000, 0);
+    ram_banks.resize(0x8000, 0); // max 4 banks of 8KB each
+    current_ram_bank = 0;
+    current_rom_bank = 1;
+    ram_enabled = false;
+    rom_banking = true;
+    mbc_type = 0;
 
     // load rom
 
@@ -20,20 +26,45 @@ Gameboy::Gameboy(const std::string& path_rom)
         std::cerr << "Failed to open ROM file: " << path_rom << std::endl;
         exit(1);
     }
+
     cartridge = std::vector<u8>(std::istreambuf_iterator<char>(file), {});
     file.close();
-    if (cartridge.size() != 0x8000) {
-        std::cerr << "ROM must be exactly 32KB in size" << std::endl;
+
+    if (cartridge.size() < 0x8000) {
+        std::cerr << "Invalid ROM file (too small): " << path_rom << std::endl;
         exit(1);
     }
 
-    std::copy(cartridge.begin(), cartridge.end(), memory.begin());
+    switch (cartridge[0x147]) {
+    case 0x00:
+        mbc_type = 0;
+        break;
+    case 0x01:
+    case 0x02:
+    case 0x03:
+        mbc_type = 1;
+        break;
+    case 0x05:
+    case 0x06:
+        mbc_type = 2;
+        break;
+    default:
+        std::cerr << "Unsupported MBC type in ROM header: 0x"
+                  << std::hex << std::setw(2) << std::setfill('0') << (int)cartridge[0x147]
+                  << std::dec << std::endl;
+        exit(1);
+    }
+
+    // load first 32KB of ROM into Gameboy memory (fixed bank 0 + initial switchable bank)
+
+    const size_t first_chunk = std::min(cartridge.size(), size_t(0x8000));
+    std::copy(cartridge.begin(), cartridge.begin() + first_chunk, memory.begin());
+    if (first_chunk < 0x8000) {
+        std::fill(memory.begin() + first_chunk, memory.begin() + 0x8000, 0xFF);
+    }
 
     // read ROM header info
 
-    header_bank_type = read8(0x147);
-    header_rom_banks = read8(0x148);
-    header_ram_banks = read8(0x149);
     for (int i = 0x134; i <= 0x143; i++) {
         char c = read8(i);
         if (c == 0)
@@ -629,9 +660,7 @@ Gameboy::Gameboy(const std::string& path_rom)
 void Gameboy::init_graphics()
 {
     std::ostringstream window_title;
-    window_title << "Gameboy Emulator - " << header_title << " - MBC: 0x"
-                 << std::hex << (int)header_bank_type << " - ROM_BANKS: "
-                 << (int)header_rom_banks << " - RAM_BANKS: " << (int)header_ram_banks;
+    window_title << "Gameboy Emulator - " << header_title;
 
     SetConfigFlags(FLAG_VSYNC_HINT);
     InitWindow(SCREEN_WIDTH * SCREEN_SCALE, SCREEN_HEIGHT * SCREEN_SCALE, window_title.str().c_str());
@@ -655,7 +684,12 @@ void Gameboy::request_interrupt(u8 bit)
 
 u8 Gameboy::read8(u16 addr) const
 {
-    if (addr == 0xFF00) {
+    if ((addr >= 0x4000) && (addr <= 0x7FFF)) {
+        // reading from the rom memory bank
+        return cartridge[(addr - 0x4000) + (current_rom_bank * 0x4000)];
+    } else if ((addr >= 0xA000) && (addr <= 0xBFFF)) {
+        return ram_banks[(addr - 0xA000) + (current_ram_bank * 0x2000)];
+    } else if (addr == 0xFF00) {
         // joypad register
 
         u8 select = memory[0xFF00] & 0x30; // bits 4 and 5 are select bits
@@ -670,9 +704,9 @@ u8 Gameboy::read8(u16 addr) const
         }
 
         return result;
-    } else {
-        return memory[addr];
     }
+
+    return memory[addr];
 }
 
 u16 Gameboy::read16(u16 addr) const
@@ -682,7 +716,13 @@ u16 Gameboy::read16(u16 addr) const
 
 void Gameboy::write8(u16 addr, u8 value)
 {
-    if (addr == 0xFF00) {
+    if (addr < 0x8000) {
+        handle_banking(addr, value);
+    } else if ((addr >= 0xA000) && (addr < 0xC000)) {
+        if (ram_enabled) {
+            ram_banks[(addr - 0xA000) + (current_ram_bank * 0x2000)] = value;
+        }
+    } else if (addr == 0xFF00) {
         // joypad register, only bits 4-5 are writable
         memory[0xFF00] = (memory[0xFF00] & 0xCF) | (value & 0x30);
     } else if (addr == DIV) {
@@ -727,6 +767,81 @@ void Gameboy::write16(u16 addr, u16 value)
 {
     write8(addr, value & 0xFF); // low byte
     write8(addr + 1, (value >> 8) & 0xFF); // high byte
+}
+
+void Gameboy::handle_banking(u16 addr, u8 value)
+{
+    // RAM enabling
+    if (addr < 0x2000) {
+        if (mbc_type == 1 || mbc_type == 2) {
+
+            // DoRAMBankEnable
+
+            if (mbc_type == 2) {
+                // if bit 4 of addr is set do nothing
+                if (addr & (1 << 4)) {
+                    return;
+                }
+            }
+
+            value &= 0x0F;
+            if (value == 0x0A) {
+                ram_enabled = true;
+            } else if (value == 0x00) {
+                ram_enabled = false;
+            }
+        }
+    }
+    // ROM bank change
+    else if ((addr >= 0x2000) && (addr < 0x4000)) {
+        if (mbc_type == 1 || mbc_type == 2) {
+
+            // DoChangeLoROMBank
+
+            if (mbc_type == 2) {
+                current_rom_bank = std::max(1, value & 0x0F);
+                return;
+            }
+
+            value &= 31; // only lower 5 bits are used
+            current_rom_bank &= 224; // clear lower 5 bits
+            current_rom_bank = std::max(1, current_rom_bank | value); // set lower 5 bits
+        }
+    }
+    // do ROM or RAM bank change
+    else if ((addr >= 0x4000) && (addr < 0x6000)) {
+        // there is no MBC2 RAM banking
+        if (mbc_type == 1) {
+            if (rom_banking) {
+
+                // DoChangeHiRomBank
+
+                current_rom_bank &= 31; // clear upper 3 bits
+                value &= 224; // clear lower 5 bits
+                current_rom_bank = std::max(1, current_rom_bank | value); // set upper 3 bits
+
+            } else {
+
+                // DoRAMBankChange
+
+                current_ram_bank = value & 0x03;
+            }
+        }
+    }
+    // this will change whether we are doing ROM banking
+    // or RAM banking with the above if statement
+    else if ((addr >= 0x6000) && (addr < 0x8000)) {
+        if (mbc_type == 1) {
+
+            // DoChangeROMRAMMode
+
+            value &= 0x01;
+            rom_banking = (value == 0);
+            if (rom_banking) {
+                current_ram_bank = 0;
+            }
+        }
+    }
 }
 
 u8 Gameboy::run_opcode()

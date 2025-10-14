@@ -38,6 +38,7 @@ struct Gameboy {
 
     std::vector<u8> memory; // 64KB addressable memory
     std::vector<u8> cartridge; // full cartridge content
+    std::vector<u8> ram_banks; // external RAM banks (if any)
     std::string header_title; // game title from ROM header
 
     int timer_counter; // counts CPU cycles for timer
@@ -78,13 +79,15 @@ struct Gameboy {
     u16 SP; // stack pointer
     u16 PC; // program counter
     u8 joypad_state; // current button states
-    u8 header_bank_type; // MBC type from ROM header
-    u8 header_rom_banks; // number of ROM banks from ROM header
-    u8 header_ram_banks; // number of RAM banks from ROM header
+    u8 mbc_type; // memory bank controller type
+    u8 current_rom_bank; // currently loaded ROM bank number
+    u8 current_ram_bank; // currently loaded RAM bank number
     bool ime; // interrupt master enable
     bool ime_scheduled; // whether to enable IME after next instruction
     bool halted; // whether the CPU is halted
     bool halt_bug; // whether the CPU is in halt bug state
+    bool ram_enabled; // whether external RAM is enabled
+    bool rom_banking; // whether in ROM banking mode
 
     /* ----------------- */
     /* ---  methods  --- */
@@ -107,4 +110,5 @@ struct Gameboy {
     u8 check_interrupts();
     void init_graphics();
     void cleanup_graphics();
+    void handle_banking(u16 addr, u8 value);
 };

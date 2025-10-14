@@ -36,11 +36,11 @@ int main(int argc, char** argv)
 }
 
 // currently passing tests:
-// single-step JSON tests
-// blargg individual CPU instruction tests
-// blargg instr_timing test
+// sm83 single-step JSON tests
+// blargg cpu_instrs.gb
+// blargg instr_timing.gb
 
-// todo: halt_bug test
+// todo: halt_bug.gb (needs graphics)
 
 // to run single step JSON tests
 // #include "single_step_tests.h"
