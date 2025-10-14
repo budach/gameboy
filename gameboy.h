@@ -34,6 +34,8 @@ struct Gameboy {
     u8 (*opcodes[256])(Gameboy&); // opcode table
     u8 (*cb_opcodes[256])(Gameboy&); // CB-prefixed opcode table
 
+    u64 interrupt_counts[5]; // interrupt request counts for debugging
+
     std::vector<u8> memory; // 64KB addressable memory
     std::vector<u8> cartridge; // full cartridge content
     std::string header_title; // game title from ROM header

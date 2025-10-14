@@ -105,6 +105,14 @@ Gameboy::Gameboy(const std::string& path_rom)
     timer_counter = 1024; // CLOCKSPEED / frequency (4096 Hz default)
     divider_counter = 0; // DIV increments at 16384 Hz
 
+    // just for debugging
+
+    interrupt_counts[0] = 0; // VBLANK
+    interrupt_counts[1] = 0; // LCD STAT
+    interrupt_counts[2] = 0; // TIMER
+    interrupt_counts[3] = 0; // SERIAL
+    interrupt_counts[4] = 0; // JOYPAD
+
     // init opcode table
 
     for (int i = 0; i < 256; i++) {
@@ -639,6 +647,10 @@ void Gameboy::cleanup_graphics()
 void Gameboy::request_interrupt(u8 bit)
 {
     write8(0xFF0F, read8(0xFF0F) | (1 << bit));
+
+    if (bit < 5) {
+        interrupt_counts[bit]++;
+    }
 }
 
 u8 Gameboy::read8(u16 addr) const
@@ -697,7 +709,16 @@ void Gameboy::write8(u16 addr, u8 value)
                 break; // 16384 Hz
             }
         }
-    } else {
+    } else if (addr == 0xFF02) {
+        // for blargg test ROM serial output
+        if (value == 0x81) {
+            char c = (char)read8(0xFF01);
+            std::cout << c << std::flush;
+        }
+        memory[0xFF02] = value;
+    }
+
+    else {
         memory[addr] = value;
     }
 }
@@ -844,7 +865,7 @@ void Gameboy::update_timers(u8 cycles)
 
         timer_counter -= cycles;
 
-        if (timer_counter <= 0) {
+        while (timer_counter <= 0) {
 
             // reset clock based on frequency
             switch (read8(TMC) & 0x3) {
