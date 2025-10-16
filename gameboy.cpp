@@ -1,3 +1,4 @@
+#include <algorithm>
 #include <bit>
 #include <iomanip>
 #include <iostream>
@@ -1044,6 +1045,276 @@ PPU_Color Gameboy::get_color(u16 palette_register, u8 color_id)
 
 void Gameboy::ppu_step([[maybe_unused]] u8 cycles)
 {
+    auto set_stat_mode = [&](u8 mode) {
+        u8 stat = memory[0xFF41];
+        u8 previous_mode = stat & 0x03;
+        if (previous_mode == mode) {
+            memory[0xFF41] = (stat & ~0x03) | mode;
+            return;
+        }
+
+        bool should_request = false;
+        switch (mode) {
+        case 0:
+            should_request = stat & (1 << 3); // H-Blank interrupt enable
+            break;
+        case 1:
+            should_request = stat & (1 << 4); // V-Blank interrupt enable
+            break;
+        case 2:
+            should_request = stat & (1 << 5); // OAM interrupt enable
+            break;
+        case 3:
+        default:
+            should_request = false;
+            break;
+        }
+
+        memory[0xFF41] = (stat & ~0x03) | mode;
+        if (should_request) {
+            request_interrupt(1);
+        }
+    };
+
+    auto update_lyc_flag = [&]() {
+        u8 ly = memory[0xFF44];
+        u8 lyc = read8(0xFF45);
+        u8 stat = memory[0xFF41];
+
+        bool previously_equal = stat & (1 << 2);
+        if (ly == lyc) {
+            stat |= (1 << 2);
+            if (!previously_equal && (stat & (1 << 6))) {
+                request_interrupt(1);
+            }
+        } else {
+            stat &= ~(1 << 2);
+        }
+        memory[0xFF41] = stat;
+    };
+
+    auto render_scanline = [&](u8 ly) {
+        u8 lcdc = read8(0xFF40);
+        bool bg_window_enabled = lcdc & 0x01;
+        bool sprites_enabled = lcdc & 0x02;
+        bool sprite_height_16 = lcdc & 0x04;
+
+        u16 bg_tile_map_base = (lcdc & 0x08) ? 0x9C00 : 0x9800;
+        u16 tile_data_base = (lcdc & 0x10) ? 0x8000 : 0x8800;
+        u16 window_tile_map_base = (lcdc & 0x40) ? 0x9C00 : 0x9800;
+
+        std::array<u8, SCREEN_WIDTH> bg_color_ids { };
+
+        if (bg_window_enabled) {
+            u8 scx = read8(0xFF43);
+            u8 scy = read8(0xFF42);
+            u8 effective_y = static_cast<u8>(scy + ly);
+            u8 tile_row = (effective_y / 8) & 0x1F;
+            u8 tile_line = effective_y % 8;
+
+            for (int x = 0; x < SCREEN_WIDTH; ++x) {
+                u8 effective_x = static_cast<u8>(scx + x);
+                u8 tile_column = (effective_x / 8) & 0x1F;
+                u16 tile_index_address = bg_tile_map_base + tile_row * 32 + tile_column;
+                u8 tile_index = read8(tile_index_address);
+
+                u16 tile_address;
+                if (lcdc & 0x10) {
+                    tile_address = tile_data_base + tile_index * 16;
+                } else {
+                    tile_address = 0x9000 + static_cast<i8>(tile_index) * 16;
+                }
+
+                u8 low = read8(tile_address + tile_line * 2);
+                u8 high = read8(tile_address + tile_line * 2 + 1);
+                int bit = 7 - (effective_x % 8);
+                u8 color_id = ((high >> bit) & 0x1) << 1 | ((low >> bit) & 0x1);
+                bg_color_ids[x] = color_id;
+            }
+        } else {
+            bg_color_ids.fill(0);
+        }
+
+        bool window_enabled = bg_window_enabled && (lcdc & 0x20);
+        if (window_enabled) {
+            u8 wy = read8(0xFF4A);
+            u8 wx = read8(0xFF4B);
+            int window_x = static_cast<int>(wx) - 7;
+            if (ly >= wy && window_x < SCREEN_WIDTH) {
+                int window_line = static_cast<int>(ly) - static_cast<int>(wy);
+                int start_x = window_x;
+                if (start_x < 0) {
+                    start_x = 0;
+                }
+
+                u8 window_tile_row = (window_line / 8) & 0x1F;
+                u8 window_tile_line = window_line % 8;
+
+                for (int x = start_x; x < SCREEN_WIDTH; ++x) {
+                    int window_pixel_x = x - window_x;
+                    u8 tile_column = ((window_pixel_x / 8) & 0x1F);
+                    u16 tile_index_address = window_tile_map_base + window_tile_row * 32 + tile_column;
+                    u8 tile_index = read8(tile_index_address);
+
+                    u16 tile_address;
+                    if (lcdc & 0x10) {
+                        tile_address = tile_data_base + tile_index * 16;
+                    } else {
+                        tile_address = 0x9000 + static_cast<i8>(tile_index) * 16;
+                    }
+
+                    u8 low = read8(tile_address + window_tile_line * 2);
+                    u8 high = read8(tile_address + window_tile_line * 2 + 1);
+                    int bit = 7 - (window_pixel_x % 8);
+                    u8 color_id = ((high >> bit) & 0x1) << 1 | ((low >> bit) & 0x1);
+                    bg_color_ids[x] = color_id;
+                }
+            }
+        }
+
+        std::array<PPU_Color, SCREEN_WIDTH> final_colors { };
+        for (int x = 0; x < SCREEN_WIDTH; ++x) {
+            final_colors[x] = get_color(0xFF47, bg_color_ids[x]);
+        }
+
+        if (sprites_enabled) {
+            struct Sprite {
+                u8 x_raw;
+                int y;
+                u8 tile_index;
+                u8 attributes;
+                u8 oam_index;
+            };
+
+            std::vector<Sprite> line_sprites;
+            line_sprites.reserve(10);
+
+            int sprite_height = sprite_height_16 ? 16 : 8;
+
+            for (int i = 0; i < 40 && static_cast<int>(line_sprites.size()) < 10; ++i) {
+                u8 sprite_y = read8(0xFE00 + i * 4);
+                u8 sprite_x = read8(0xFE00 + i * 4 + 1);
+                u8 tile = read8(0xFE00 + i * 4 + 2);
+                u8 attributes = read8(0xFE00 + i * 4 + 3);
+
+                int y_pos = static_cast<int>(sprite_y) - 16;
+                if (sprite_x == 0 || sprite_y == 0) {
+                    continue;
+                }
+
+                if (ly < y_pos || ly >= (y_pos + sprite_height)) {
+                    continue;
+                }
+
+                line_sprites.push_back({ sprite_x, y_pos, tile, attributes, static_cast<u8>(i) });
+            }
+
+            std::stable_sort(line_sprites.begin(), line_sprites.end(), [](const Sprite& lhs, const Sprite& rhs) {
+                if (lhs.x_raw == rhs.x_raw) {
+                    return lhs.oam_index < rhs.oam_index;
+                }
+                return lhs.x_raw < rhs.x_raw;
+            });
+
+            for (const auto& sprite : line_sprites) {
+                int x_pos = static_cast<int>(sprite.x_raw) - 8;
+                int line = static_cast<int>(ly) - sprite.y;
+                bool y_flip = sprite.attributes & 0x40;
+                bool x_flip = sprite.attributes & 0x20;
+                bool bg_priority = sprite.attributes & 0x80;
+
+                if (y_flip) {
+                    line = (sprite_height - 1) - line;
+                }
+
+                u8 tile_index = sprite.tile_index;
+                if (sprite_height == 16) {
+                    tile_index &= 0xFE;
+                    if (line >= 8) {
+                        tile_index += 1;
+                    }
+                }
+
+                u8 tile_line = line % 8;
+                u16 tile_address = 0x8000 + tile_index * 16 + tile_line * 2;
+                u8 low = read8(tile_address);
+                u8 high = read8(tile_address + 1);
+                u16 palette_register = (sprite.attributes & 0x10) ? 0xFF49 : 0xFF48;
+
+                for (int pixel = 0; pixel < 8; ++pixel) {
+                    int bit_index = x_flip ? pixel : (7 - pixel);
+                    u8 color_id = ((high >> bit_index) & 0x1) << 1 | ((low >> bit_index) & 0x1);
+                    if (color_id == 0) {
+                        continue;
+                    }
+
+                    int screen_x = x_pos + pixel;
+                    if (screen_x < 0 || screen_x >= SCREEN_WIDTH) {
+                        continue;
+                    }
+
+                    if (bg_priority && bg_window_enabled && bg_color_ids[screen_x] != 0) {
+                        continue;
+                    }
+
+                    final_colors[screen_x] = get_color(palette_register, color_id);
+                }
+            }
+        }
+
+        for (int x = 0; x < SCREEN_WIDTH; ++x) {
+            size_t offset = (static_cast<size_t>(ly) * SCREEN_WIDTH + static_cast<size_t>(x)) * 4;
+            framebuffer_back[offset + 0] = final_colors[x].r;
+            framebuffer_back[offset + 1] = final_colors[x].g;
+            framebuffer_back[offset + 2] = final_colors[x].b;
+            framebuffer_back[offset + 3] = final_colors[x].a;
+        }
+    };
+
+    u8 lcdc = read8(0xFF40);
+    if (!(lcdc & 0x80)) {
+        scanline_counter = 456;
+        memory[0xFF44] = 0;
+        set_stat_mode(0);
+        update_lyc_flag();
+        return;
+    }
+
+    scanline_counter -= cycles;
+
+    while (scanline_counter <= 0) {
+        scanline_counter += 456;
+
+        u8 ly = memory[0xFF44];
+        if (ly < 144) {
+            render_scanline(ly);
+        }
+
+        ly++;
+        if (ly == 144) {
+            request_interrupt(0);
+            std::copy(framebuffer_back.begin(), framebuffer_back.end(), framebuffer_front.begin());
+        } else if (ly > 153) {
+            ly = 0;
+        }
+
+        memory[0xFF44] = ly;
+        update_lyc_flag();
+    }
+
+    u8 current_ly = memory[0xFF44];
+    if (current_ly >= 144) {
+        set_stat_mode(1);
+    } else {
+        int line_cycles = 456 - scanline_counter;
+        if (line_cycles < 80) {
+            set_stat_mode(2);
+        } else if (line_cycles < (80 + 172)) {
+            set_stat_mode(3);
+        } else {
+            set_stat_mode(0);
+        }
+    }
 }
 
 void Gameboy::run_one_frame()
