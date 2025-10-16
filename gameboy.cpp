@@ -1,5 +1,6 @@
 #include <algorithm>
 #include <bit>
+#include <deque>
 #include <iomanip>
 #include <iostream>
 
@@ -20,7 +21,12 @@ Gameboy::Gameboy(const std::string& path_rom)
     ram_enabled = false;
     rom_banking = true;
     mbc_type = 0;
-    scanline_counter = 456; // each scanline takes 456 t-cycles
+    scanline_counter = 0; // counts cycles within current scanline
+    scanline_sprite_count = 0;
+    ppu_cycle = 0;
+    ppu_mode = 0;
+    window_line_counter = 0;
+    scanline_rendered = false;
 
     // io register masks (default: no mask = 0x00)
 
@@ -164,6 +170,9 @@ Gameboy::Gameboy(const std::string& path_rom)
     memory[0xFF4A] = 0x00;
     memory[0xFF4B] = 0x00;
     memory[0xFFFF] = 0x00;
+
+    ppu_mode = memory[0xFF41] & 0x03;
+    update_stat_coincidence_flag();
 
     // init misc
 
@@ -1077,276 +1086,439 @@ PPU_Color Gameboy::get_color(u16 palette_register, u8 color_id)
     return DMG_PALETTE[(read8(palette_register) >> (color_id * 2)) & 0x03];
 }
 
-void Gameboy::ppu_step([[maybe_unused]] u8 cycles)
+void Gameboy::set_ppu_mode(u8 mode)
 {
-    auto set_stat_mode = [&](u8 mode) {
-        u8 stat = memory[0xFF41];
-        u8 previous_mode = stat & 0x03;
-        if (previous_mode == mode) {
-            memory[0xFF41] = (stat & ~0x03) | mode;
-            return;
-        }
-
-        bool should_request = false;
-        switch (mode) {
-        case 0:
-            should_request = stat & (1 << 3); // H-Blank interrupt enable
-            break;
-        case 1:
-            should_request = stat & (1 << 4); // V-Blank interrupt enable
-            break;
-        case 2:
-            should_request = stat & (1 << 5); // OAM interrupt enable
-            break;
-        case 3:
-        default:
-            should_request = false;
-            break;
-        }
-
-        memory[0xFF41] = (stat & ~0x03) | mode;
-        if (should_request) {
-            request_interrupt(1);
-        }
-    };
-
-    auto update_lyc_flag = [&]() {
-        u8 ly = memory[0xFF44];
-        u8 lyc = read8(0xFF45);
-        u8 stat = memory[0xFF41];
-
-        bool previously_equal = stat & (1 << 2);
-        if (ly == lyc) {
-            stat |= (1 << 2);
-            if (!previously_equal && (stat & (1 << 6))) {
-                request_interrupt(1);
-            }
-        } else {
-            stat &= ~(1 << 2);
-        }
-        memory[0xFF41] = stat;
-    };
-
-    auto render_scanline = [&](u8 ly) {
-        u8 lcdc = read8(0xFF40);
-        bool bg_window_enabled = lcdc & 0x01;
-        bool sprites_enabled = lcdc & 0x02;
-        bool sprite_height_16 = lcdc & 0x04;
-
-        u16 bg_tile_map_base = (lcdc & 0x08) ? 0x9C00 : 0x9800;
-        u16 tile_data_base = (lcdc & 0x10) ? 0x8000 : 0x8800;
-        u16 window_tile_map_base = (lcdc & 0x40) ? 0x9C00 : 0x9800;
-
-        std::array<u8, SCREEN_WIDTH> bg_color_ids {};
-
-        if (bg_window_enabled) {
-            u8 scx = read8(0xFF43);
-            u8 scy = read8(0xFF42);
-            u8 effective_y = static_cast<u8>(scy + ly);
-            u8 tile_row = (effective_y / 8) & 0x1F;
-            u8 tile_line = effective_y % 8;
-
-            for (int x = 0; x < SCREEN_WIDTH; ++x) {
-                u8 effective_x = static_cast<u8>(scx + x);
-                u8 tile_column = (effective_x / 8) & 0x1F;
-                u16 tile_index_address = bg_tile_map_base + tile_row * 32 + tile_column;
-                u8 tile_index = read8(tile_index_address);
-
-                u16 tile_address;
-                if (lcdc & 0x10) {
-                    tile_address = tile_data_base + tile_index * 16;
-                } else {
-                    tile_address = 0x9000 + static_cast<i8>(tile_index) * 16;
-                }
-
-                u8 low = read8(tile_address + tile_line * 2);
-                u8 high = read8(tile_address + tile_line * 2 + 1);
-                int bit = 7 - (effective_x % 8);
-                u8 color_id = ((high >> bit) & 0x1) << 1 | ((low >> bit) & 0x1);
-                bg_color_ids[x] = color_id;
-            }
-        } else {
-            bg_color_ids.fill(0);
-        }
-
-        bool window_enabled = bg_window_enabled && (lcdc & 0x20);
-        if (window_enabled) {
-            u8 wy = read8(0xFF4A);
-            u8 wx = read8(0xFF4B);
-            int window_x = static_cast<int>(wx) - 7;
-            if (ly >= wy && window_x < SCREEN_WIDTH) {
-                int window_line = static_cast<int>(ly) - static_cast<int>(wy);
-                int start_x = window_x;
-                if (start_x < 0) {
-                    start_x = 0;
-                }
-
-                u8 window_tile_row = (window_line / 8) & 0x1F;
-                u8 window_tile_line = window_line % 8;
-
-                for (int x = start_x; x < SCREEN_WIDTH; ++x) {
-                    int window_pixel_x = x - window_x;
-                    u8 tile_column = ((window_pixel_x / 8) & 0x1F);
-                    u16 tile_index_address = window_tile_map_base + window_tile_row * 32 + tile_column;
-                    u8 tile_index = read8(tile_index_address);
-
-                    u16 tile_address;
-                    if (lcdc & 0x10) {
-                        tile_address = tile_data_base + tile_index * 16;
-                    } else {
-                        tile_address = 0x9000 + static_cast<i8>(tile_index) * 16;
-                    }
-
-                    u8 low = read8(tile_address + window_tile_line * 2);
-                    u8 high = read8(tile_address + window_tile_line * 2 + 1);
-                    int bit = 7 - (window_pixel_x % 8);
-                    u8 color_id = ((high >> bit) & 0x1) << 1 | ((low >> bit) & 0x1);
-                    bg_color_ids[x] = color_id;
-                }
-            }
-        }
-
-        std::array<PPU_Color, SCREEN_WIDTH> final_colors {};
-        for (int x = 0; x < SCREEN_WIDTH; ++x) {
-            final_colors[x] = get_color(0xFF47, bg_color_ids[x]);
-        }
-
-        if (sprites_enabled) {
-            struct Sprite {
-                u8 x_raw;
-                int y;
-                u8 tile_index;
-                u8 attributes;
-                u8 oam_index;
-            };
-
-            std::vector<Sprite> line_sprites;
-            line_sprites.reserve(10);
-
-            int sprite_height = sprite_height_16 ? 16 : 8;
-
-            for (int i = 0; i < 40 && static_cast<int>(line_sprites.size()) < 10; ++i) {
-                u8 sprite_y = read8(0xFE00 + i * 4);
-                u8 sprite_x = read8(0xFE00 + i * 4 + 1);
-                u8 tile = read8(0xFE00 + i * 4 + 2);
-                u8 attributes = read8(0xFE00 + i * 4 + 3);
-
-                int y_pos = static_cast<int>(sprite_y) - 16;
-                if (sprite_x == 0 || sprite_y == 0) {
-                    continue;
-                }
-
-                if (ly < y_pos || ly >= (y_pos + sprite_height)) {
-                    continue;
-                }
-
-                line_sprites.push_back({ sprite_x, y_pos, tile, attributes, static_cast<u8>(i) });
-            }
-
-            std::stable_sort(line_sprites.begin(), line_sprites.end(), [](const Sprite& lhs, const Sprite& rhs) {
-                if (lhs.x_raw == rhs.x_raw) {
-                    return lhs.oam_index < rhs.oam_index;
-                }
-                return lhs.x_raw < rhs.x_raw;
-            });
-
-            for (const auto& sprite : line_sprites) {
-                int x_pos = static_cast<int>(sprite.x_raw) - 8;
-                int line = static_cast<int>(ly) - sprite.y;
-                bool y_flip = sprite.attributes & 0x40;
-                bool x_flip = sprite.attributes & 0x20;
-                bool bg_priority = sprite.attributes & 0x80;
-
-                if (y_flip) {
-                    line = (sprite_height - 1) - line;
-                }
-
-                u8 tile_index = sprite.tile_index;
-                if (sprite_height == 16) {
-                    tile_index &= 0xFE;
-                    if (line >= 8) {
-                        tile_index += 1;
-                    }
-                }
-
-                u8 tile_line = line % 8;
-                u16 tile_address = 0x8000 + tile_index * 16 + tile_line * 2;
-                u8 low = read8(tile_address);
-                u8 high = read8(tile_address + 1);
-                u16 palette_register = (sprite.attributes & 0x10) ? 0xFF49 : 0xFF48;
-
-                for (int pixel = 0; pixel < 8; ++pixel) {
-                    int bit_index = x_flip ? pixel : (7 - pixel);
-                    u8 color_id = ((high >> bit_index) & 0x1) << 1 | ((low >> bit_index) & 0x1);
-                    if (color_id == 0) {
-                        continue;
-                    }
-
-                    int screen_x = x_pos + pixel;
-                    if (screen_x < 0 || screen_x >= SCREEN_WIDTH) {
-                        continue;
-                    }
-
-                    if (bg_priority && bg_window_enabled && bg_color_ids[screen_x] != 0) {
-                        continue;
-                    }
-
-                    final_colors[screen_x] = get_color(palette_register, color_id);
-                }
-            }
-        }
-
-        for (int x = 0; x < SCREEN_WIDTH; ++x) {
-            size_t offset = (static_cast<size_t>(ly) * SCREEN_WIDTH + static_cast<size_t>(x)) * 4;
-            framebuffer_back[offset + 0] = final_colors[x].r;
-            framebuffer_back[offset + 1] = final_colors[x].g;
-            framebuffer_back[offset + 2] = final_colors[x].b;
-            framebuffer_back[offset + 3] = final_colors[x].a;
-        }
-    };
-
-    u8 lcdc = read8(0xFF40);
-    if (!(lcdc & 0x80)) {
-        scanline_counter = 456;
-        memory[0xFF44] = 0;
-        set_stat_mode(0);
-        update_lyc_flag();
+    mode &= 0x03;
+    if (ppu_mode == mode) {
         return;
     }
 
-    scanline_counter -= cycles;
+    ppu_mode = mode;
 
-    while (scanline_counter <= 0) {
-        scanline_counter += 456;
+    u8 stat = memory[0xFF41];
+    stat = (stat & ~0x03) | mode;
+    memory[0xFF41] = stat;
 
-        u8 ly = memory[0xFF44];
-        if (ly < 144) {
-            render_scanline(ly);
-        }
-
-        ly++;
-        if (ly == 144) {
-            request_interrupt(0);
-            std::copy(framebuffer_back.begin(), framebuffer_back.end(), framebuffer_front.begin());
-        } else if (ly > 153) {
-            ly = 0;
-        }
-
-        memory[0xFF44] = ly;
-        update_lyc_flag();
+    bool request_stat = false;
+    switch (mode) {
+    case 0:
+        request_stat = stat & 0x08;
+        break;
+    case 1:
+        request_stat = stat & 0x10;
+        break;
+    case 2:
+        request_stat = stat & 0x20;
+        break;
+    default:
+        break;
     }
 
-    u8 current_ly = memory[0xFF44];
-    if (current_ly >= 144) {
-        set_stat_mode(1);
+    if (request_stat) {
+        request_interrupt(1);
+    }
+}
+
+void Gameboy::update_stat_coincidence_flag()
+{
+    u8 stat = memory[0xFF41];
+    bool was_coincident = stat & 0x04;
+
+    if (memory[0xFF44] == memory[0xFF45]) {
+        stat |= 0x04;
+        if (!was_coincident && (stat & 0x40)) {
+            request_interrupt(1);
+        }
     } else {
-        int line_cycles = 456 - scanline_counter;
-        if (line_cycles < 80) {
-            set_stat_mode(2);
-        } else if (line_cycles < (80 + 172)) {
-            set_stat_mode(3);
+        stat &= 0xFB;
+    }
+
+    stat = (stat & ~0x03) | (ppu_mode & 0x03);
+    memory[0xFF41] = stat;
+}
+
+void Gameboy::evaluate_sprites(u8 ly)
+{
+    scanline_sprite_count = 0;
+
+    u8 lcdc = read8(0xFF40);
+    if (!(lcdc & 0x02)) {
+        return;
+    }
+
+    bool tall_sprites = lcdc & 0x04;
+    int sprite_height = tall_sprites ? 16 : 8;
+
+    for (int i = 0; i < 40 && scanline_sprite_count < 10; ++i) {
+        u8 y = memory[0xFE00 + i * 4];
+        u8 x = memory[0xFE00 + i * 4 + 1];
+        u8 tile = memory[0xFE00 + i * 4 + 2];
+        u8 attributes = memory[0xFE00 + i * 4 + 3];
+
+        int sprite_y = static_cast<int>(y) - 16;
+        if (sprite_y <= static_cast<int>(ly) && static_cast<int>(ly) < sprite_y + sprite_height) {
+            scanline_sprites[scanline_sprite_count++] = { x, y, tile, attributes, static_cast<u8>(i) };
+        }
+    }
+}
+
+bool Gameboy::render_scanline()
+{
+    u8 ly = memory[0xFF44];
+    if (ly >= SCREEN_HEIGHT) {
+        return false;
+    }
+
+    u8 lcdc = read8(0xFF40);
+    bool bg_enabled = lcdc & 0x01;
+    bool sprite_enabled = lcdc & 0x02;
+    bool tall_sprites = lcdc & 0x04;
+    bool window_enabled = lcdc & 0x20;
+
+    u16 bg_map_base = (lcdc & 0x08) ? 0x9C00 : 0x9800;
+    u16 window_map_base = (lcdc & 0x40) ? 0x9C00 : 0x9800;
+    bool use_signed_tile_index = !(lcdc & 0x10);
+
+    u8 scx = read8(0xFF43);
+    u8 scy = read8(0xFF42);
+    u8 wx = read8(0xFF4B);
+    u8 wy = read8(0xFF4A);
+
+    bool window_possible = window_enabled && ly >= wy && wx <= 166;
+    int window_screen_x = std::max(0, static_cast<int>(wx) - 7);
+
+    int bg_y = (static_cast<int>(scy) + ly) & 0xFF;
+    int bg_tile_row = (bg_y >> 3) & 0x1F;
+    int bg_tile_line = bg_y & 0x07;
+    int bg_tile_col_base = scx >> 3;
+    int scx_offset = scx & 0x07;
+
+    int window_line = window_line_counter;
+    int window_tile_row = (window_line >> 3) & 0x1F;
+    int window_tile_line = window_line & 0x07;
+
+    struct BGPixel {
+        u8 color = 0;
+    };
+
+    struct SpriteFIFOEntry {
+        u8 color = 0;
+        u16 palette = 0xFF48;
+        bool behind_bg = false;
+        bool has_pixel = false;
+    };
+
+    struct PreparedSprite {
+        int first_visible_x = 0;
+        int start_offset = 0;
+        std::array<u8, 8> pixels{};
+        bool behind_bg = false;
+        u16 palette = 0xFF48;
+    };
+
+    std::vector<PreparedSprite> prepared_sprites;
+    if (sprite_enabled && scanline_sprite_count > 0) {
+        std::array<Sprite, 10> sorted = scanline_sprites;
+        auto begin = sorted.begin();
+        auto end = begin + scanline_sprite_count;
+        std::sort(begin, end, [](const Sprite& a, const Sprite& b) {
+            int ax = static_cast<int>(a.x);
+            int bx = static_cast<int>(b.x);
+            if (ax == bx) {
+                return a.oam_index < b.oam_index;
+            }
+            return ax < bx;
+        });
+
+        prepared_sprites.reserve(scanline_sprite_count);
+        for (int i = 0; i < scanline_sprite_count; ++i) {
+            const Sprite& sprite = sorted[i];
+
+            int screen_x = static_cast<int>(sprite.x) - 8;
+            if (screen_x >= SCREEN_WIDTH || screen_x <= -8) {
+                continue;
+            }
+
+            int sprite_height = tall_sprites ? 16 : 8;
+            int sprite_y = static_cast<int>(sprite.y) - 16;
+            int line = static_cast<int>(ly) - sprite_y;
+            if (line < 0 || line >= sprite_height) {
+                continue;
+            }
+
+            if (sprite.attributes & 0x40) {
+                line = sprite_height - 1 - line;
+            }
+
+            u8 tile_index = sprite.tile;
+            if (tall_sprites) {
+                tile_index &= 0xFE;
+                if (line >= 8) {
+                    tile_index += 1;
+                    line -= 8;
+                }
+            }
+
+            u16 tile_addr = static_cast<u16>(0x8000 + static_cast<u16>(tile_index) * 16 + line * 2);
+            u8 low = read8(tile_addr);
+            u8 high = read8(tile_addr + 1);
+
+            std::array<u8, 8> pixels{};
+            for (int px = 0; px < 8; ++px) {
+                int bit = (sprite.attributes & 0x20) ? px : (7 - px);
+                u8 color = ((high >> bit) & 0x01) << 1 | ((low >> bit) & 0x01);
+                pixels[px] = color;
+            }
+
+            int first_visible_x = std::max(0, screen_x);
+            if (first_visible_x >= SCREEN_WIDTH) {
+                continue;
+            }
+
+            PreparedSprite prepared;
+            prepared.first_visible_x = first_visible_x;
+            prepared.start_offset = first_visible_x - screen_x;
+            prepared.pixels = pixels;
+            prepared.behind_bg = sprite.attributes & 0x80;
+            prepared.palette = (sprite.attributes & 0x10) ? 0xFF49 : 0xFF48;
+
+            prepared_sprites.push_back(prepared);
+        }
+    }
+
+    auto compute_tile_addr = [use_signed_tile_index](u8 tile_number) -> u16 {
+        if (!use_signed_tile_index) {
+            return static_cast<u16>(0x8000 + static_cast<u16>(tile_number) * 16);
+        }
+        int signed_index = static_cast<int8_t>(tile_number);
+        return static_cast<u16>(0x9000 + signed_index * 16);
+    };
+
+    std::deque<BGPixel> bg_fifo;
+    std::deque<SpriteFIFOEntry> sprite_fifo;
+
+    int bg_fetch_count = 0;
+    int window_fetch_count = 0;
+    bool window_fetching = false;
+    bool scx_offset_applied = false;
+    bool window_used_this_line = false;
+
+    auto fetch_tile = [&](bool use_window) {
+        u16 map_addr = 0;
+        u16 tile_addr = 0;
+
+        if (use_window) {
+            int tile_col = window_fetch_count & 0x1F;
+            map_addr = window_map_base + ((window_tile_row & 0x1F) * 32) + tile_col;
+            u8 tile_number = read8(map_addr);
+            tile_addr = compute_tile_addr(tile_number) + window_tile_line * 2;
+            window_fetch_count++;
         } else {
-            set_stat_mode(0);
+            int tile_col = (bg_tile_col_base + bg_fetch_count) & 0x1F;
+            map_addr = bg_map_base + ((bg_tile_row & 0x1F) * 32) + tile_col;
+            u8 tile_number = read8(map_addr);
+            tile_addr = compute_tile_addr(tile_number) + bg_tile_line * 2;
+            bg_fetch_count++;
+        }
+
+        u8 low = read8(tile_addr);
+        u8 high = read8(tile_addr + 1);
+
+        for (int px = 0; px < 8; ++px) {
+            int bit = 7 - px;
+            u8 color = ((high >> bit) & 0x01) << 1 | ((low >> bit) & 0x01);
+            bg_fifo.push_back({ color });
+        }
+    };
+
+    size_t next_sprite_index = 0;
+
+    for (int x = 0; x < SCREEN_WIDTH; ++x) {
+        if (window_possible && !window_fetching && x >= window_screen_x) {
+            window_fetching = true;
+            bg_fifo.clear();
+            window_fetch_count = 0;
+            window_tile_row = (window_line_counter >> 3) & 0x1F;
+            window_tile_line = window_line_counter & 0x07;
+        }
+
+        if (!window_fetching) {
+            while (!scx_offset_applied && bg_fifo.size() <= static_cast<size_t>(scx_offset)) {
+                fetch_tile(false);
+            }
+            while (bg_fifo.empty()) {
+                fetch_tile(false);
+            }
+            if (!scx_offset_applied) {
+                for (int i = 0; i < scx_offset; ++i) {
+                    if (bg_fifo.empty()) {
+                        fetch_tile(false);
+                    }
+                    bg_fifo.pop_front();
+                }
+                scx_offset_applied = true;
+            }
+        } else {
+            while (bg_fifo.empty()) {
+                fetch_tile(true);
+            }
+            window_used_this_line = true;
+        }
+
+        while (next_sprite_index < prepared_sprites.size() &&
+            prepared_sprites[next_sprite_index].first_visible_x == x) {
+            const PreparedSprite& sprite = prepared_sprites[next_sprite_index];
+            for (int px = sprite.start_offset; px < 8; ++px) {
+                int queue_index = px - sprite.start_offset;
+                int target_x = x + queue_index;
+                if (target_x >= SCREEN_WIDTH) {
+                    break;
+                }
+                if (sprite_fifo.size() <= static_cast<size_t>(queue_index)) {
+                    sprite_fifo.resize(queue_index + 1);
+                }
+                u8 color = sprite.pixels[px];
+                if (color == 0) {
+                    continue;
+                }
+                SpriteFIFOEntry& entry = sprite_fifo[queue_index];
+                if (!entry.has_pixel) {
+                    entry.color = color;
+                    entry.palette = sprite.palette;
+                    entry.behind_bg = sprite.behind_bg;
+                    entry.has_pixel = true;
+                }
+            }
+            ++next_sprite_index;
+        }
+
+        if (sprite_fifo.empty()) {
+            sprite_fifo.push_back(SpriteFIFOEntry{});
+        }
+
+        BGPixel bg_pixel = bg_fifo.front();
+        bg_fifo.pop_front();
+
+        SpriteFIFOEntry sprite_pixel = sprite_fifo.front();
+        sprite_fifo.pop_front();
+
+        u8 color_id = bg_pixel.color;
+        u16 palette = 0xFF47;
+
+        if (!bg_enabled) {
+            color_id = 0;
+        }
+
+        if (sprite_enabled && sprite_pixel.has_pixel) {
+            bool draw_sprite = true;
+            if (sprite_pixel.behind_bg && bg_enabled && color_id != 0) {
+                draw_sprite = false;
+            }
+            if (draw_sprite) {
+                color_id = sprite_pixel.color;
+                palette = sprite_pixel.palette;
+            }
+        }
+
+        PPU_Color color = get_color(palette, color_id);
+        size_t fb_index = (static_cast<size_t>(ly) * SCREEN_WIDTH + x) * 4;
+        framebuffer_back[fb_index + 0] = color.r;
+        framebuffer_back[fb_index + 1] = color.g;
+        framebuffer_back[fb_index + 2] = color.b;
+        framebuffer_back[fb_index + 3] = color.a;
+    }
+
+    return window_used_this_line;
+}
+
+void Gameboy::ppu_step(u8 cycles)
+{
+    u8 lcdc = read8(0xFF40);
+    if (!(lcdc & 0x80)) {
+        ppu_cycle = 0;
+        scanline_counter = 0;
+        scanline_sprite_count = 0;
+        scanline_rendered = false;
+        window_line_counter = 0;
+        memory[0xFF44] = 0;
+        ppu_mode = 0;
+
+        u8 stat = memory[0xFF41] & ~0x03;
+        if (memory[0xFF44] == memory[0xFF45]) {
+            stat |= 0x04;
+        } else {
+            stat &= 0xFB;
+        }
+        memory[0xFF41] = stat;
+        return;
+    }
+
+    for (u8 i = 0; i < cycles; ++i) {
+        u8 ly = memory[0xFF44];
+
+        if (ly >= 144) {
+            if (ppu_mode != 1) {
+                set_ppu_mode(1);
+            }
+        } else {
+            if (ppu_cycle < 80) {
+                if (ppu_mode != 2) {
+                    set_ppu_mode(2);
+                    evaluate_sprites(ly);
+                    scanline_rendered = false;
+                }
+            } else if (ppu_cycle < 252) {
+                if (ppu_mode != 3) {
+                    set_ppu_mode(3);
+                }
+                if (!scanline_rendered) {
+                    bool window_used = render_scanline();
+                    if (window_used) {
+                        window_line_counter++;
+                    }
+                    scanline_rendered = true;
+                }
+            } else {
+                if (ppu_mode != 0) {
+                    set_ppu_mode(0);
+                }
+            }
+        }
+
+        update_stat_coincidence_flag();
+
+        ++ppu_cycle;
+        scanline_counter = ppu_cycle;
+
+        if (ppu_cycle >= 456) {
+            ppu_cycle -= 456;
+            scanline_counter = ppu_cycle;
+
+            ly = memory[0xFF44] + 1;
+            memory[0xFF44] = ly;
+
+            if ((read8(0xFF40) & 0x20) && ly == read8(0xFF4A)) {
+                window_line_counter = 0;
+            }
+
+            if (ly == 144) {
+                set_ppu_mode(1);
+                request_interrupt(0);
+                framebuffer_front = framebuffer_back;
+            } else if (ly > 153) {
+                memory[0xFF44] = 0;
+                ly = 0;
+                window_line_counter = 0;
+                scanline_rendered = false;
+                evaluate_sprites(0);
+                set_ppu_mode(2);
+            } else if (ly < 144) {
+                scanline_rendered = false;
+                evaluate_sprites(ly);
+                set_ppu_mode(2);
+            }
+
+            update_stat_coincidence_flag();
         }
     }
 }

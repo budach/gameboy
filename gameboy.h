@@ -56,6 +56,19 @@ struct Gameboy {
     std::vector<u8> ram_banks; // external RAM banks (if any)
     std::array<u8, SCREEN_WIDTH * SCREEN_HEIGHT * 4> framebuffer_back; // 160x144 pixels, RGBA format (back buffer)
     std::array<u8, SCREEN_WIDTH * SCREEN_HEIGHT * 4> framebuffer_front; // display buffer (front buffer)
+    struct Sprite {
+        u8 x;
+        u8 y;
+        u8 tile;
+        u8 attributes;
+        u8 oam_index;
+    };
+    std::array<Sprite, 10> scanline_sprites; // up to 10 sprites per scanline
+    int scanline_sprite_count; // number of sprites on current scanline
+    int ppu_cycle; // current cycle within scanline
+    u8 ppu_mode; // current PPU mode (0-3)
+    u8 window_line_counter; // how many window lines have been drawn this frame
+    bool scanline_rendered; // whether the current scanline has been rendered
     std::string header_title; // game title from ROM header
 
     void* texture; // raylib texture for rendering
@@ -133,4 +146,8 @@ struct Gameboy {
     void cleanup_graphics();
     void handle_banking(u16 addr, u8 value);
     PPU_Color get_color(u16 palette_register, u8 color_id);
+    void set_ppu_mode(u8 mode);
+    void update_stat_coincidence_flag();
+    void evaluate_sprites(u8 ly);
+    bool render_scanline();
 };
