@@ -48,6 +48,7 @@ struct Gameboy {
     u8 (*opcodes[256])(Gameboy&); // opcode table
     u8 (*cb_opcodes[256])(Gameboy&); // CB-prefixed opcode table
 
+    u8 io_register_masks[256]; // which bits are always read as 1 in I/O registers
     u64 interrupt_counts[5]; // interrupt request counts for debugging
 
     std::vector<u8> memory; // 64KB addressable memory

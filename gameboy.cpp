@@ -22,6 +22,42 @@ Gameboy::Gameboy(const std::string& path_rom)
     mbc_type = 0;
     scanline_counter = 456; // each scanline takes 456 t-cycles
 
+    // io register masks (default: no mask = 0x00)
+
+    std::fill(std::begin(io_register_masks), std::end(io_register_masks), 0x00);
+
+    io_register_masks[0x03] = 0xFF; // Unmapped registers read as 0xFF
+
+    for (int i = 0x08; i <= 0x0E; i++) {
+        io_register_masks[i] = 0xFF;
+    }
+
+    io_register_masks[0x15] = 0xFF;
+    io_register_masks[0x1F] = 0xFF;
+
+    for (int i = 0x27; i <= 0x2F; i++) {
+        io_register_masks[i] = 0xFF;
+    }
+
+    for (int i = 0x4C; i <= 0x50; i++) {
+        io_register_masks[i] = 0xFF;
+    }
+
+    for (int i = 0x51; i <= 0x7F; i++) {
+        io_register_masks[i] = 0xFF;
+    }
+
+    io_register_masks[0x02] = 0x7E; // SC: bits 1-6 unused
+    io_register_masks[0x07] = 0xF8; // TAC: bits 3-7 unused
+    io_register_masks[0x0F] = 0xE0; // IF: bits 5-7 unused
+    io_register_masks[0x10] = 0x80; // NR10: bit 7 unused
+    io_register_masks[0x1A] = 0x7F; // NR30: bits 0-6 unused
+    io_register_masks[0x1C] = 0x9F; // NR32: bits 0-4,7 unused
+    io_register_masks[0x20] = 0xC0; // NR41: bits 6-7 unused
+    io_register_masks[0x23] = 0x3F; // NR44: bits 0-5 unused
+    io_register_masks[0x26] = 0x70; // NR52: bits 4-6 unused
+    io_register_masks[0x41] = 0x80; // STAT: bit 7 unused
+
     // load rom
 
     std::ifstream file(path_rom, std::ios::binary);
@@ -726,6 +762,8 @@ u8 Gameboy::read8(u16 addr) const
         }
 
         return result;
+    } else if (addr > 0xFF00) {
+        return memory[addr] | io_register_masks[addr - 0xFF00];
     }
 
     return memory[addr];
@@ -771,13 +809,9 @@ void Gameboy::write8(u16 addr, u8 value)
                 break; // 16384 Hz
             }
         }
-    } else if (addr == 0xFF02) {
-        // for blargg test ROM serial output
-        if (value == 0x81) {
-            char c = (char)read8(0xFF01);
-            std::cout << c << std::flush;
-        }
-        memory[0xFF02] = value;
+    } else if (addr == 0xFF0F) {
+        // IF (0xFF0F): only bits 0-4 are writable
+        memory[0xFF0F] = value & 0x1F;
     } else if (addr == 0xFF44) {
         // writing to LY register resets it to 0
         memory[0xFF44] = 0;
@@ -1103,7 +1137,7 @@ void Gameboy::ppu_step([[maybe_unused]] u8 cycles)
         u16 tile_data_base = (lcdc & 0x10) ? 0x8000 : 0x8800;
         u16 window_tile_map_base = (lcdc & 0x40) ? 0x9C00 : 0x9800;
 
-        std::array<u8, SCREEN_WIDTH> bg_color_ids { };
+        std::array<u8, SCREEN_WIDTH> bg_color_ids {};
 
         if (bg_window_enabled) {
             u8 scx = read8(0xFF43);
@@ -1172,7 +1206,7 @@ void Gameboy::ppu_step([[maybe_unused]] u8 cycles)
             }
         }
 
-        std::array<PPU_Color, SCREEN_WIDTH> final_colors { };
+        std::array<PPU_Color, SCREEN_WIDTH> final_colors {};
         for (int x = 0; x < SCREEN_WIDTH; ++x) {
             final_colors[x] = get_color(0xFF47, bg_color_ids[x]);
         }
