@@ -1037,72 +1037,12 @@ void Gameboy::update_timers(u8 cycles)
     }
 }
 
-void Gameboy::set_lcd_status()
-{
-    u8 status = read8(0xFF41);
-
-    if (!(read8(0xFF40) & (1 << 7))) { // LCD disabled
-        // set the mode to 1 during lcd disabled and reset scanline
-        scanline_counter = 456;
-        memory[0xFF44] = 0;
-        status &= 252;
-        status |= 1;
-        write8(0xFF41, status);
-        return;
-    }
-
-    u8 current_line = read8(0xFF44);
-    u8 current_mode = status & 0x3;
-    u8 mode = 0;
-    bool req_interrupt = false;
-
-    if (current_line >= 144) {
-        mode = 1; // V-Blank
-        status |= 1; // set bit 0
-        status &= 0xFD; // clear bit 1
-        req_interrupt = (status & (1 << 4)) != 0;
-    } else {
-        int mode2_bounds = 456 - 80;
-        int mode3_bounds = mode2_bounds - 172;
-
-        if (scanline_counter >= mode2_bounds) {
-            mode = 2; // OAM read mode
-            status |= 2; // set bit 1
-            status &= 0xFE; // clear bit 0
-            req_interrupt = (status & (1 << 5)) != 0;
-        } else if (scanline_counter >= mode3_bounds) {
-            mode = 3; // VRAM read mode
-            status |= 3; // ensure bits 0-1 are set to 11
-        } else {
-            mode = 0; // H-Blank
-            status &= 0xFC; // clear bits 0-1
-            req_interrupt = (status & (1 << 3)) != 0;
-        }
-    }
-
-    if (req_interrupt && (mode != current_mode)) {
-        request_interrupt(1); // LCD STAT interrupt
-    }
-
-    // check LY == LYC (coincidence flag)
-    if (current_line == read8(0xFF45)) {
-        status |= (1 << 2); // set bit 2
-        if (status & (1 << 6)) {
-            request_interrupt(1); // LCD STAT interrupt
-        }
-    } else {
-        status &= ~(1 << 2); // clear bit 2
-    }
-
-    write8(0xFF41, status);
-}
-
 PPU_Color Gameboy::get_color(u16 palette_register, u8 color_id)
 {
     return DMG_PALETTE[(read8(palette_register) >> (color_id * 2)) & 0x03];
 }
 
-void Gameboy::ppu_step(u8 cycles)
+void Gameboy::ppu_step([[maybe_unused]] u8 cycles)
 {
 }
 
@@ -1115,7 +1055,7 @@ void Gameboy::run_one_frame()
         u8 cycles = run_opcode();
         cycles += check_interrupts();
         update_timers(cycles);
-        // ppu_step(cycles);
+        ppu_step(cycles);
         cycles_this_frame += cycles;
     }
 }
