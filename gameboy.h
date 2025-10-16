@@ -1,5 +1,6 @@
 #pragma once
 
+#include <array>
 #include <bit>
 #include <cstdint>
 #include <fstream>
@@ -8,7 +9,9 @@
 #include <vector>
 
 using u8 = uint8_t;
+using i8 = int8_t;
 using u16 = uint16_t;
+using i16 = int16_t;
 using u32 = uint32_t;
 using u64 = uint64_t;
 
@@ -25,6 +28,17 @@ constexpr int SCREEN_WIDTH = 160;
 constexpr int SCREEN_HEIGHT = 144;
 constexpr int SCREEN_SCALE = 5;
 
+struct PPU_Color {
+    u8 r, g, b, a;
+};
+
+constexpr PPU_Color DMG_PALETTE[4] = {
+    { 0xE0, 0xF8, 0xD0, 0xFF }, // White
+    { 0x88, 0xC0, 0x70, 0xFF }, // Light gray
+    { 0x34, 0x68, 0x56, 0xFF }, // Dark gray
+    { 0x08, 0x18, 0x20, 0xFF }, // Black
+};
+
 struct Gameboy {
 
     /* ----------------- */
@@ -39,7 +53,11 @@ struct Gameboy {
     std::vector<u8> memory; // 64KB addressable memory
     std::vector<u8> cartridge; // full cartridge content
     std::vector<u8> ram_banks; // external RAM banks (if any)
+    std::array<u8, SCREEN_WIDTH * SCREEN_HEIGHT * 4> framebuffer_back; // 160x144 pixels, RGBA format (back buffer)
+    std::array<u8, SCREEN_WIDTH * SCREEN_HEIGHT * 4> framebuffer_front; // display buffer (front buffer)
     std::string header_title; // game title from ROM header
+
+    void* texture; // raylib texture for rendering
 
     int timer_counter; // counts CPU cycles for timer
     int divider_counter; // counts CPU cycles for divider register
@@ -114,4 +132,8 @@ struct Gameboy {
     void cleanup_graphics();
     void handle_banking(u16 addr, u8 value);
     void set_lcd_status();
+    void draw_scanline();
+    void render_tiles();
+    void render_sprites();
+    PPU_Color get_color(uint16_t palette_register, uint8_t color_id);
 };

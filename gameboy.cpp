@@ -8,6 +8,7 @@
 #include "raylib.h"
 
 Gameboy::Gameboy(const std::string& path_rom)
+    : texture(nullptr)
 {
     // init memory
 
@@ -667,10 +668,29 @@ void Gameboy::init_graphics()
     InitWindow(SCREEN_WIDTH * SCREEN_SCALE, SCREEN_HEIGHT * SCREEN_SCALE, window_title.str().c_str());
     SetTargetFPS(60);
     SetExitKey(0); // Disable ESC exit key
+
+    // Create texture for framebuffer
+    Image image = {
+        .data = framebuffer_front.data(),
+        .width = SCREEN_WIDTH,
+        .height = SCREEN_HEIGHT,
+        .mipmaps = 1,
+        .format = PIXELFORMAT_UNCOMPRESSED_R8G8B8A8
+    };
+
+    Texture2D* tex = new Texture2D(LoadTextureFromImage(image));
+    SetTextureFilter(*tex, TEXTURE_FILTER_POINT);
+    texture = static_cast<void*>(tex);
 }
 
 void Gameboy::cleanup_graphics()
 {
+    if (texture) {
+        Texture2D* tex = static_cast<Texture2D*>(texture);
+        UnloadTexture(*tex);
+        delete tex;
+        texture = nullptr;
+    }
     CloseWindow();
 }
 
@@ -1077,6 +1097,210 @@ void Gameboy::set_lcd_status()
     write8(0xFF41, status);
 }
 
+PPU_Color Gameboy::get_color(u16 palette_register, u8 color_id)
+{
+    return DMG_PALETTE[(read8(palette_register) >> (color_id * 2)) & 0x03];
+}
+
+void Gameboy::render_tiles()
+{
+    u16 tile_data = 0;
+    u16 background_memory = 0;
+    bool unsig = true;
+    u8 lcd_control = read8(0xFF40);
+
+    // where to draw the visual area and the window
+    u8 scroll_y = read8(0xFF42);
+    u8 scroll_x = read8(0xFF43);
+    u8 window_y = read8(0xFF4A);
+    u8 window_x = read8(0xFF4B) - 7;
+
+    bool using_window = false;
+
+    if (lcd_control & (1 << 5)) { // window enabled
+        if (window_y <= read8(0xFF44)) {
+            using_window = true;
+        }
+    }
+
+    if (lcd_control & (1 << 4)) { // which tile data to use
+        tile_data = 0x8000;
+    } else {
+        // IMPORTANT: This memory region uses signed bytes as tile identifiers
+        tile_data = 0x8800;
+        unsig = false;
+    }
+
+    if (!using_window) { // which background memory to use
+        if (lcd_control & (1 << 3)) {
+            background_memory = 0x9C00;
+        } else {
+            background_memory = 0x9800;
+        }
+    } else {
+        if (lcd_control & (1 << 6)) {
+            background_memory = 0x9C00;
+        } else {
+            background_memory = 0x9800;
+        }
+    }
+
+    u8 y_pos = 0;
+
+    // y_pos is used to calculate which of the 32 vertical tiles we are on
+    if (!using_window) {
+        y_pos = scroll_y + read8(0xFF44);
+    } else {
+        y_pos = read8(0xFF44) - window_y;
+    }
+
+    // which of the 8 vertical pixels of the tile we want
+    u16 tile_row = (y_pos / 8) * 32;
+
+    // time to draw the 160 horizontal pixels of the scanline
+    for (int pixel = 0; pixel < 160; ++pixel) {
+        u8 x_pos = pixel + scroll_x;
+
+        // translate the current x pos to window space
+        if (using_window) {
+            if (pixel >= window_x) {
+                x_pos = pixel - window_x;
+            }
+        }
+
+        // which of the 32 horizontal tiles we are on
+        u16 tile_col = x_pos / 8;
+        i16 tile_num;
+
+        // get the tile number, can be signed or unsigned
+        u16 tile_addr = background_memory + tile_row + tile_col;
+        if (unsig) {
+            tile_num = static_cast<u8>(read8(tile_addr));
+        } else {
+            tile_num = static_cast<i8>(read8(tile_addr));
+        }
+
+        // deduce the address of the tile data
+        u16 tile_location = tile_data;
+        if (unsig) {
+            tile_location += (tile_num * 16);
+        } else {
+            tile_location += ((tile_num + 128) * 16);
+        }
+
+        // find the correct line (0-7) of the tile to draw
+        u8 line = y_pos % 8;
+        line *= 2; // each line takes up 2 bytes
+        u8 data1 = read8(tile_location + line);
+        u8 data2 = read8(tile_location + line + 1);
+
+        // pixel 0 in the tile is bit 7 of data1 and data2
+        // pixel 1 is bit 6 etc
+        int color_bit = (x_pos % 8);
+        color_bit -= 7;
+        color_bit *= -1;
+
+        // combine data2 and data1 to get the color id (0-3)
+        int color_num = (data2 >> color_bit) & 0x1;
+        color_num <<= 1;
+        color_num |= (data1 >> color_bit) & 0x1;
+
+        // safety check
+        int final_y = read8(0xFF44);
+        if ((final_y < 0) || (final_y > 143)) {
+            std::cerr << "Final Y out of bounds: " << (int)final_y << std::endl;
+            continue;
+        }
+
+        // get the actual color from the palette
+        PPU_Color color = get_color(0xFF47, color_num);
+        int fb_index = ((final_y * SCREEN_WIDTH) + pixel) * 4;
+        framebuffer_back[fb_index + 0] = color.r;
+        framebuffer_back[fb_index + 1] = color.g;
+        framebuffer_back[fb_index + 2] = color.b;
+        framebuffer_back[fb_index + 3] = color.a;
+    }
+}
+
+void Gameboy::render_sprites()
+{
+    bool use_8x16 = read8(0xFF40) & (1 << 2); // sprite size
+
+    for (int sprite = 0; sprite < 40; ++sprite) {
+        u8 index = sprite * 4;
+        u8 y_pos = read8(0xFE00 + index) - 16;
+        u8 x_pos = read8(0xFE00 + index + 1) - 8;
+        u8 tile_location = read8(0xFE00 + index + 2);
+        u8 attributes = read8(0xFE00 + index + 3);
+        bool y_flip = attributes & (1 << 6);
+        bool x_flip = attributes & (1 << 5);
+        int scanline = read8(0xFF44);
+        int y_size = use_8x16 ? 16 : 8;
+
+        // does this sprite appear on the current scanline?
+        if ((scanline >= y_pos) && (scanline < (y_pos + y_size))) {
+            int line = scanline - y_pos;
+            if (y_flip) { // read sprite backwards in y axis
+                line -= y_size;
+                line *= -1;
+            }
+
+            line *= 2; // each line takes up 2 bytes
+            u16 data_address = 0x8000 + (tile_location * 16) + line;
+            u8 data1 = read8(data_address);
+            u8 data2 = read8(data_address + 1);
+
+            // its easier to read in from right to left as pixel 0 is
+            // bit 7 in the colour data, pixel 1 is bit 6 etc
+            for (int tile_pixel = 7; tile_pixel >= 0; --tile_pixel) {
+                int colour_bit = tile_pixel;
+                if (x_flip) { // read sprite backwards in x axis
+                    colour_bit -= 7;
+                    colour_bit *= -1;
+                }
+
+                int color_num = (data2 >> colour_bit) & 0x1;
+                color_num <<= 1;
+                color_num |= (data1 >> colour_bit) & 0x1;
+                u16 color_ddress = (attributes & (1 << 4)) ? 0xFF49 : 0xFF48;
+                PPU_Color color = get_color(color_ddress, color_num);
+
+                // continue if white (transparent for sprites)
+                if (color_num == 0) {
+                    continue;
+                }
+
+                int x_pix = 0 - tile_pixel;
+                x_pix += 7;
+                int pixel = x_pos + x_pix;
+
+                // safety check
+                if ((scanline < 0) || (scanline > 143) || (pixel < 0) || (pixel > 159)) {
+                    std::cerr << "Sprite pixel out of bounds: " << (int)scanline << "," << (int)pixel << std::endl;
+                    continue;
+                }
+
+                int fb_index = ((scanline * SCREEN_WIDTH) + pixel) * 4;
+                framebuffer_back[fb_index + 0] = color.r;
+                framebuffer_back[fb_index + 1] = color.g;
+                framebuffer_back[fb_index + 2] = color.b;
+                framebuffer_back[fb_index + 3] = color.a;
+            }
+        }
+    }
+}
+
+void Gameboy::draw_scanline()
+{
+    u8 control = read8(0xFF40);
+    if (control & (1 << 0)) { // background enabled
+        render_tiles();
+    }
+    if (control & (1 << 1)) { // sprites enabled
+        render_sprites();
+    }
+}
+
 void Gameboy::ppu_step(u8 cycles)
 {
     set_lcd_status();
@@ -1096,6 +1320,7 @@ void Gameboy::ppu_step(u8 cycles)
             draw_scanline();
         } else if (current_line == 144) {
             request_interrupt(0); // V-Blank interrupt
+            framebuffer_front = framebuffer_back; // swap framebuffers
         } else if (current_line > 153) {
             memory[0xFF44] = 0;
         }
@@ -1118,9 +1343,20 @@ void Gameboy::run_one_frame()
 
 void Gameboy::render_screen()
 {
+    Texture2D* tex = static_cast<Texture2D*>(texture);
+    UpdateTexture(*tex, framebuffer_front.data());
+
     BeginDrawing();
     ClearBackground(BLACK);
-    DrawText(TextFormat("FPS: %d", GetFPS()), 5, 3, 32, ORANGE);
+
+    DrawTexturePro(
+        *tex,
+        { 0, 0, (float)SCREEN_WIDTH, (float)SCREEN_HEIGHT },
+        { 0, 0, (float)(SCREEN_WIDTH * SCREEN_SCALE), (float)(SCREEN_HEIGHT * SCREEN_SCALE) },
+        { 0, 0 },
+        0.0f,
+        WHITE);
+
     EndDrawing();
 }
 
