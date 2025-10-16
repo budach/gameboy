@@ -43,6 +43,7 @@ struct Gameboy {
 
     int timer_counter; // counts CPU cycles for timer
     int divider_counter; // counts CPU cycles for divider register
+    int scanline_counter; // counts CPU cycles for PPU scanlines
 
     union { // registers
         u16 AF;
@@ -107,8 +108,10 @@ struct Gameboy {
     void update_inputs();
     void request_interrupt(u8 bit);
     void update_timers(u8 cycles);
+    void ppu_step(u8 cycles);
     u8 check_interrupts();
     void init_graphics();
     void cleanup_graphics();
     void handle_banking(u16 addr, u8 value);
+    void set_lcd_status();
 };

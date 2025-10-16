@@ -18,6 +18,7 @@ Gameboy::Gameboy(const std::string& path_rom)
     ram_enabled = false;
     rom_banking = true;
     mbc_type = 0;
+    scanline_counter = 456; // each scanline takes 456 t-cycles
 
     // load rom
 
@@ -756,9 +757,16 @@ void Gameboy::write8(u16 addr, u8 value)
             std::cout << c << std::flush;
         }
         memory[0xFF02] = value;
-    }
-
-    else {
+    } else if (addr == 0xFF44) {
+        // writing to LY register resets it to 0
+        memory[0xFF44] = 0;
+    } else if (addr == 0xFF46) {
+        // DMA transfer
+        u16 source = value << 8; // value * 0x100
+        for (int i = 0; i < 0xA0; i++) {
+            write8(0xFE00 + i, read8(source + i));
+        }
+    } else {
         memory[addr] = value;
     }
 }
@@ -1009,6 +1017,91 @@ void Gameboy::update_timers(u8 cycles)
     }
 }
 
+void Gameboy::set_lcd_status()
+{
+    u8 status = read8(0xFF41);
+
+    if (!(read8(0xFF40) & (1 << 7))) { // LCD disabled
+        // set the mode to 1 during lcd disabled and reset scanline
+        scanline_counter = 456;
+        memory[0xFF44] = 0;
+        status &= 252;
+        status |= 1;
+        write8(0xFF41, status);
+        return;
+    }
+
+    u8 current_line = read8(0xFF44);
+    u8 current_mode = status & 0x3;
+    u8 mode = 0;
+    bool req_interrupt = false;
+
+    if (current_line >= 144) {
+        mode = 1; // V-Blank
+        status |= 1; // set bit 0
+        status &= 0xFD; // clear bit 1
+        req_interrupt = (status & (1 << 4)) != 0;
+    } else {
+        int mode2_bounds = 456 - 80;
+        int mode3_bounds = mode2_bounds - 172;
+
+        if (scanline_counter >= mode2_bounds) {
+            mode = 2; // OAM read mode
+            status |= 2; // set bit 1
+            status &= 0xFE; // clear bit 0
+            req_interrupt = (status & (1 << 5)) != 0;
+        } else if (scanline_counter >= mode3_bounds) {
+            mode = 3; // VRAM read mode
+            status |= 3; // ensure bits 0-1 are set to 11
+        } else {
+            mode = 0; // H-Blank
+            status &= 0xFC; // clear bits 0-1
+            req_interrupt = (status & (1 << 3)) != 0;
+        }
+    }
+
+    if (req_interrupt && (mode != current_mode)) {
+        request_interrupt(1); // LCD STAT interrupt
+    }
+
+    // check LY == LYC (coincidence flag)
+    if (current_line == read8(0xFF45)) {
+        status |= (1 << 2); // set bit 2
+        if (status & (1 << 6)) {
+            request_interrupt(1); // LCD STAT interrupt
+        }
+    } else {
+        status &= ~(1 << 2); // clear bit 2
+    }
+
+    write8(0xFF41, status);
+}
+
+void Gameboy::ppu_step(u8 cycles)
+{
+    set_lcd_status();
+
+    if (read8(0xFF40) & (1 << 7)) { // LCD enabled
+        scanline_counter -= cycles;
+    } else {
+        return;
+    }
+
+    if (scanline_counter <= 0) {
+        memory[0xFF44]++; // LY register
+        u8 current_line = memory[0xFF44];
+        scanline_counter += 456;
+
+        if (current_line < 144) {
+            draw_scanline();
+        } else if (current_line == 144) {
+            request_interrupt(0); // V-Blank interrupt
+        } else if (current_line > 153) {
+            memory[0xFF44] = 0;
+        }
+    }
+}
+
 void Gameboy::run_one_frame()
 {
     update_inputs();
@@ -1018,7 +1111,7 @@ void Gameboy::run_one_frame()
         u8 cycles = run_opcode();
         cycles += check_interrupts();
         update_timers(cycles);
-        // ppu_step(cycles);
+        ppu_step(cycles);
         cycles_this_frame += cycles;
     }
 }
