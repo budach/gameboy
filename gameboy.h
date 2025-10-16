@@ -132,8 +132,5 @@ struct Gameboy {
     void cleanup_graphics();
     void handle_banking(u16 addr, u8 value);
     void set_lcd_status();
-    void draw_scanline();
-    void render_tiles();
-    void render_sprites();
     PPU_Color get_color(uint16_t palette_register, uint8_t color_id);
 };
