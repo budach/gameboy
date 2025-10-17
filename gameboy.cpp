@@ -44,7 +44,7 @@ Gameboy::Gameboy(const std::string& path_rom)
 
 void Gameboy::initialize_memory()
 {
-    memory.resize(0x10000, 0);
+    memory.fill(0);
     ram_banks.clear();
     ram_bank_size = 0;
     ram_bank_count = 0;
@@ -447,6 +447,17 @@ void Gameboy::initialize_io_registers()
 
 void Gameboy::initialize_runtime_state()
 {
+    framebuffer_front_pixels = framebuffers[0].data();
+    framebuffer_back_pixels = framebuffers[1].data();
+    framebuffers[0].fill(0);
+    framebuffers[1].fill(0);
+    for (auto& row : tile_cache) {
+        row.fill(0);
+    }
+    sprite_line_stamp.fill(0);
+    sprite_line_data.fill(0);
+    sprite_line_stamp_value = 1;
+
     ime = false;
     ime_scheduled = false;
     halted = false;
@@ -976,12 +987,12 @@ void Gameboy::init_graphics()
     window_title = "Gameboy Emulator - " + header_title;
 
     InitWindow(SCREEN_WIDTH * SCREEN_SCALE, SCREEN_HEIGHT * SCREEN_SCALE, window_title.c_str());
-    // SetTargetFPS(target_fps);
+    SetTargetFPS(target_fps);
     SetExitKey(0); // Disable ESC exit key
 
     // Create texture for framebuffer
     Image image = {
-        .data = framebuffer_front.data(),
+        .data = framebuffer_front_pixels,
         .width = SCREEN_WIDTH,
         .height = SCREEN_HEIGHT,
         .mipmaps = 1,
@@ -1018,6 +1029,9 @@ void Gameboy::write8(u16 addr, u8 value)
 {
     if (addr < 0x8000) {
         handle_banking(addr, value);
+    } else if (addr < 0x9800) {
+        memory[addr] = value;
+        update_tile_cache(addr);
     } else if ((addr >= 0xA000) && (addr < 0xC000)) {
         if (!ram_enabled) {
             return;
@@ -1243,6 +1257,30 @@ void Gameboy::refresh_palette_cache(u8 index, u8 value)
     cache[1] = DMG_PALETTE[(value >> 2) & 0x03];
     cache[2] = DMG_PALETTE[(value >> 4) & 0x03];
     cache[3] = DMG_PALETTE[(value >> 6) & 0x03];
+}
+
+void Gameboy::update_tile_cache(u16 addr)
+{
+    if (addr < 0x8000 || addr >= 0x9800) {
+        return;
+    }
+
+    const u16 base = static_cast<u16>(addr & static_cast<u16>(~0x1));
+    const int tile_offset = static_cast<int>(base) - 0x8000;
+    if (tile_offset < 0 || tile_offset >= static_cast<int>(VRAM_TILE_COUNT * 16)) {
+        return;
+    }
+
+    const size_t tile_index = static_cast<size_t>(tile_offset / 16);
+    const size_t row_index = static_cast<size_t>((tile_offset / 2) % 8);
+    const u8 low = memory[base];
+    const u8 high = memory[static_cast<u16>(base + 1)];
+
+    auto& decoded_row = tile_cache[tile_index * 8 + row_index];
+    for (int bit = 7; bit >= 0; --bit) {
+        const u8 color = static_cast<u8>(((high >> bit) & 0x01) << 1 | ((low >> bit) & 0x01));
+        decoded_row[7 - bit] = color;
+    }
 }
 
 u8 Gameboy::run_opcode()
@@ -1558,6 +1596,11 @@ bool Gameboy::render_scanline()
         return static_cast<u16>(0x9000 + signed_index * 16);
     };
 
+    if (++sprite_line_stamp_value == 0) {
+        sprite_line_stamp.fill(0);
+        sprite_line_stamp_value = 1;
+    }
+
     std::array<u8, SCREEN_WIDTH> bg_colors {};
     if (bg_enabled || sprite_enabled) {
         int x = 0;
@@ -1568,13 +1611,18 @@ bool Gameboy::render_scanline()
         while (x < SCREEN_WIDTH) {
             const u16 map_addr = static_cast<u16>(bg_map_base + ((tile_col & 0x1F) + row_offset));
             const u8 tile_number = mem[map_addr];
-            const u16 tile_addr = static_cast<u16>(compute_tile_addr(tile_number) + bg_tile_line * 2);
-            const u8 low = mem[tile_addr];
-            const u8 high = mem[tile_addr + 1];
+            const u16 tile_base = compute_tile_addr(tile_number);
+            const int tile_offset = static_cast<int>(tile_base) - 0x8000;
+            if (tile_offset < 0 || tile_offset >= static_cast<int>(VRAM_TILE_COUNT * 16)) {
+                ++tile_col;
+                pixel_offset = 0;
+                continue;
+            }
+            const size_t cache_index = static_cast<size_t>(tile_offset / 16) * 8 + bg_tile_line;
+            const auto& decoded_row = tile_cache[cache_index];
 
             for (int px = pixel_offset; px < 8 && x < SCREEN_WIDTH; ++px, ++x) {
-                const int bit = 7 - px;
-                bg_colors[x] = static_cast<u8>(((high >> bit) & 0x01) << 1 | ((low >> bit) & 0x01));
+                bg_colors[x] = decoded_row[px];
             }
 
             pixel_offset = 0;
@@ -1592,23 +1640,22 @@ bool Gameboy::render_scanline()
         while (x < SCREEN_WIDTH) {
             const u16 map_addr = static_cast<u16>(window_map_base + (row_offset + (tile_col & 0x1F)));
             const u8 tile_number = mem[map_addr];
-            const u16 tile_addr = static_cast<u16>(compute_tile_addr(tile_number) + window_tile_line * 2);
-            const u8 low = mem[tile_addr];
-            const u8 high = mem[tile_addr + 1];
+            const u16 tile_base = compute_tile_addr(tile_number);
+            const int tile_offset = static_cast<int>(tile_base) - 0x8000;
+            if (tile_offset < 0 || tile_offset >= static_cast<int>(VRAM_TILE_COUNT * 16)) {
+                ++tile_col;
+                continue;
+            }
+            const size_t cache_index = static_cast<size_t>(tile_offset / 16) * 8 + window_tile_line;
+            const auto& decoded_row = tile_cache[cache_index];
 
             for (int px = 0; px < 8 && x < SCREEN_WIDTH; ++px, ++x) {
-                const int bit = 7 - px;
-                bg_colors[x] = static_cast<u8>(((high >> bit) & 0x01) << 1 | ((low >> bit) & 0x01));
+                bg_colors[x] = decoded_row[px];
             }
 
             ++tile_col;
         }
     }
-
-    std::array<u8, SCREEN_WIDTH> sprite_color {};
-    std::array<u8, SCREEN_WIDTH> sprite_palette_idx {};
-    std::array<u8, SCREEN_WIDTH> sprite_priority {};
-    std::array<u8, SCREEN_WIDTH> sprite_has {};
 
     if (sprite_enabled && scanline_sprite_count > 0) {
         const int sprite_height = tall_sprites ? 16 : 8;
@@ -1640,29 +1687,33 @@ bool Gameboy::render_scanline()
                 }
             }
 
-            const u16 tile_addr = static_cast<u16>(0x8000 + static_cast<u16>(tile_index) * 16 + tile_line * 2);
-            const u8 low = mem[tile_addr];
-            const u8 high = mem[tile_addr + 1];
+            const u16 tile_base = static_cast<u16>(0x8000 + static_cast<u16>(tile_index) * 16);
+            const int tile_offset = static_cast<int>(tile_base) - 0x8000;
+            if (tile_offset < 0 || tile_offset >= static_cast<int>(VRAM_TILE_COUNT * 16)) {
+                continue;
+            }
+            const size_t cache_index = static_cast<size_t>(tile_offset / 16) * 8 + tile_line;
+            const auto& decoded_row = tile_cache[cache_index];
 
             const bool flip_x = sprite.attributes & 0x20;
             const int start_px = std::max(0, -screen_x);
             const int end_px = std::min(8, SCREEN_WIDTH - screen_x);
             for (int px = start_px; px < end_px; ++px) {
-                const int bit = flip_x ? px : (7 - px);
-                const u8 color = static_cast<u8>(((high >> bit) & 0x01) << 1 | ((low >> bit) & 0x01));
+                const int src_px = flip_x ? (7 - px) : px;
+                const u8 color = decoded_row[src_px];
                 if (color == 0) {
                     continue;
                 }
 
                 const int target_x = screen_x + px;
-                if (sprite_has[target_x]) {
+                if (sprite_line_stamp[target_x] == sprite_line_stamp_value) {
                     continue;
                 }
 
-                sprite_has[target_x] = 1;
-                sprite_color[target_x] = color;
-                sprite_palette_idx[target_x] = (sprite.attributes & 0x10) ? 1 : 0;
-                sprite_priority[target_x] = (sprite.attributes & 0x80) ? 1 : 0;
+                sprite_line_stamp[target_x] = sprite_line_stamp_value;
+                const u8 palette_bit = (sprite.attributes & 0x10) ? 1 : 0;
+                const u8 priority_bit = (sprite.attributes & 0x80) ? 1 : 0;
+                sprite_line_data[target_x] = static_cast<u8>(color | (palette_bit << 2) | (priority_bit << 3) | 0x10);
             }
         }
     }
@@ -1671,20 +1722,18 @@ bool Gameboy::render_scanline()
     const u32* const obj_palette0 = palette_cache[1].data();
     const u32* const obj_palette1 = palette_cache[2].data();
 
-    u32* framebuffer_line = framebuffer_back.data() + static_cast<size_t>(ly) * SCREEN_WIDTH;
+    u32* framebuffer_line = framebuffer_back_pixels + static_cast<size_t>(ly) * SCREEN_WIDTH;
     for (int x = 0; x < SCREEN_WIDTH; ++x) {
         const u8 bg_color = bg_colors[x];
         u8 color_id = bg_enabled ? bg_color : 0;
         const u32* palette_ptr = bg_palette;
 
-        if (sprite_enabled && sprite_has[x]) {
-            bool draw_sprite = true;
-            if (sprite_priority[x] && bg_enabled && bg_color != 0) {
-                draw_sprite = false;
-            }
-            if (draw_sprite) {
-                color_id = sprite_color[x];
-                palette_ptr = sprite_palette_idx[x] ? obj_palette1 : obj_palette0;
+        if (sprite_enabled && sprite_line_stamp[x] == sprite_line_stamp_value) {
+            const u8 sprite_data = sprite_line_data[x];
+            const bool sprite_priority = sprite_data & 0x08;
+            if (!(sprite_priority && bg_enabled && bg_color != 0)) {
+                color_id = sprite_data & 0x03;
+                palette_ptr = (sprite_data & 0x04) ? obj_palette1 : obj_palette0;
             }
         }
 
@@ -1771,7 +1820,7 @@ void Gameboy::ppu_step(u8 cycles)
             if (new_ly == 144) {
                 set_ppu_mode(1);
                 request_interrupt(0);
-                framebuffer_front = framebuffer_back;
+                std::swap(framebuffer_front_pixels, framebuffer_back_pixels);
             } else if (new_ly > 153) {
                 memory[0xFF44] = 0;
                 window_line_counter = 0;
@@ -1806,7 +1855,7 @@ void Gameboy::run_one_frame()
 void Gameboy::render_screen()
 {
     Texture2D* tex = static_cast<Texture2D*>(texture);
-    UpdateTexture(*tex, framebuffer_front.data());
+    UpdateTexture(*tex, framebuffer_front_pixels);
 
     BeginDrawing();
     ClearBackground(BLACK);

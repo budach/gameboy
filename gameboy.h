@@ -31,6 +31,8 @@ constexpr int SCREEN_WIDTH = 160;
 constexpr int SCREEN_HEIGHT = 144;
 constexpr int SCREEN_SCALE = 5;
 constexpr u32 CYCLES_PER_FRAME = 70224;
+constexpr size_t VRAM_TILE_COUNT = 384;
+constexpr size_t VRAM_TILE_ROWS = VRAM_TILE_COUNT * 8;
 
 using PPU_Color = Color;
 
@@ -133,11 +135,16 @@ struct Gameboy {
     u8 rtc_latch_previous_value; // previous value written to latch register
     bool rtc_latch_active; // whether RTC data is latched
     u8 io_register_masks[256]; // which bits are always read as 1 in I/O registers
-    std::vector<u8> memory; // 64KB addressable memory
+    std::array<u8, 0x10000> memory {}; // 64KB addressable memory
     std::vector<u8> cartridge; // full cartridge content
     std::vector<u8> ram_banks; // external RAM banks (if any)
-    std::array<u32, SCREEN_WIDTH * SCREEN_HEIGHT> framebuffer_back; // 160x144 pixels, RGBA format (back buffer)
-    std::array<u32, SCREEN_WIDTH * SCREEN_HEIGHT> framebuffer_front; // display buffer (front buffer)
+    std::array<std::array<u32, SCREEN_WIDTH * SCREEN_HEIGHT>, 2> framebuffers {}; // double-buffered pixel storage
+    u32* framebuffer_front_pixels;
+    u32* framebuffer_back_pixels;
+    std::array<std::array<u8, 8>, VRAM_TILE_ROWS> tile_cache {}; // decoded 2bpp rows for VRAM tiles
+    std::array<u16, SCREEN_WIDTH> sprite_line_stamp {};
+    std::array<u8, SCREEN_WIDTH> sprite_line_data {};
+    u16 sprite_line_stamp_value;
     std::string header_title; // game title from ROM header
     std::string window_title; // window title string
     std::filesystem::path rom_path; // path to loaded ROM
@@ -192,6 +199,7 @@ private:
     void initialize_io_registers();
     void initialize_runtime_state();
     void initialize_opcode_tables();
+    void update_tile_cache(u16 addr);
     void load_save_ram();
     void save_save_ram();
 };
