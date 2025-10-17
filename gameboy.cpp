@@ -1636,6 +1636,10 @@ void Gameboy::render_screen()
         0.0f,
         WHITE);
 
+    std::ostringstream window_title;
+    window_title << "Gameboy Emulator - " << header_title << " - FPS: " << GetFPS();
+    SetWindowTitle(window_title.str().c_str());
+
     EndDrawing();
 }
 
