@@ -1,6 +1,5 @@
 #include <algorithm>
 #include <bit>
-#include <deque>
 #include <iomanip>
 #include <iostream>
 #include <limits>
@@ -1298,28 +1297,71 @@ bool Gameboy::render_scanline()
     const int scx_offset = scx & 0x07;
 
     const int window_line = window_line_counter;
-    int window_tile_row = (window_line >> 3) & 0x1F;
-    int window_tile_line = window_line & 0x07;
+    const int window_tile_row = (window_line >> 3) & 0x1F;
+    const int window_tile_line = window_line & 0x07;
 
     const u8* mem = memory.data();
 
-    struct SpriteFIFOEntry {
-        u8 color = 0;
-        u16 palette = 0xFF48;
-        bool behind_bg = false;
-        bool has_pixel = false;
+    auto compute_tile_addr = [use_signed_tile_index](u8 tile_number) -> u16 {
+        if (!use_signed_tile_index) {
+            return static_cast<u16>(0x8000 + static_cast<u16>(tile_number) * 16);
+        }
+        int signed_index = static_cast<int8_t>(tile_number);
+        return static_cast<u16>(0x9000 + signed_index * 16);
     };
 
-    struct PreparedSprite {
-        int first_visible_x = 0;
-        int start_offset = 0;
-        std::array<u8, 8> pixels {};
-        bool behind_bg = false;
-        u16 palette = 0xFF48;
-    };
+    std::array<u8, SCREEN_WIDTH> bg_colors {};
+    if (bg_enabled || sprite_enabled) {
+        int x = 0;
+        int tile_col = bg_tile_col_base;
+        int pixel_offset = scx_offset;
+        const int row_offset = (bg_tile_row & 0x1F) * 32;
 
-    std::array<PreparedSprite, 10> prepared_sprites {};
-    size_t prepared_count = 0;
+        while (x < SCREEN_WIDTH) {
+            const u16 map_addr = static_cast<u16>(bg_map_base + ((tile_col & 0x1F) + row_offset));
+            const u8 tile_number = mem[map_addr];
+            const u16 tile_addr = static_cast<u16>(compute_tile_addr(tile_number) + bg_tile_line * 2);
+            const u8 low = mem[tile_addr];
+            const u8 high = mem[tile_addr + 1];
+
+            for (int px = pixel_offset; px < 8 && x < SCREEN_WIDTH; ++px, ++x) {
+                const int bit = 7 - px;
+                bg_colors[x] = static_cast<u8>(((high >> bit) & 0x01) << 1 | ((low >> bit) & 0x01));
+            }
+
+            pixel_offset = 0;
+            ++tile_col;
+        }
+    }
+
+    bool window_used_this_line = false;
+    if (window_possible && window_screen_x < SCREEN_WIDTH) {
+        window_used_this_line = true;
+        int x = window_screen_x;
+        int tile_col = 0;
+        const int row_offset = (window_tile_row & 0x1F) * 32;
+
+        while (x < SCREEN_WIDTH) {
+            const u16 map_addr = static_cast<u16>(window_map_base + (row_offset + (tile_col & 0x1F)));
+            const u8 tile_number = mem[map_addr];
+            const u16 tile_addr = static_cast<u16>(compute_tile_addr(tile_number) + window_tile_line * 2);
+            const u8 low = mem[tile_addr];
+            const u8 high = mem[tile_addr + 1];
+
+            for (int px = 0; px < 8 && x < SCREEN_WIDTH; ++px, ++x) {
+                const int bit = 7 - px;
+                bg_colors[x] = static_cast<u8>(((high >> bit) & 0x01) << 1 | ((low >> bit) & 0x01));
+            }
+
+            ++tile_col;
+        }
+    }
+
+    std::array<u8, SCREEN_WIDTH> sprite_color {};
+    std::array<u8, SCREEN_WIDTH> sprite_palette_idx {};
+    std::array<u8, SCREEN_WIDTH> sprite_priority {};
+    std::array<u8, SCREEN_WIDTH> sprite_has {};
+
     if (sprite_enabled && scanline_sprite_count > 0) {
         std::array<Sprite, 10> sorted = scanline_sprites;
         auto begin = sorted.begin();
@@ -1348,12 +1390,12 @@ bool Gameboy::render_scanline()
                 continue;
             }
 
-            int tile_line = line;
             if (sprite.attributes & 0x40) {
-                tile_line = sprite_height - 1 - tile_line;
+                line = sprite_height - 1 - line;
             }
 
             u8 tile_index = sprite.tile;
+            int tile_line = line;
             if (tall_sprites) {
                 tile_index &= 0xFE;
                 if (tile_line >= 8) {
@@ -1366,205 +1408,51 @@ bool Gameboy::render_scanline()
             const u8 low = mem[tile_addr];
             const u8 high = mem[tile_addr + 1];
 
-            PreparedSprite prepared {};
-            prepared.first_visible_x = std::max(0, screen_x);
-            if (prepared.first_visible_x >= SCREEN_WIDTH) {
-                continue;
-            }
-            prepared.start_offset = prepared.first_visible_x - screen_x;
-
             const bool flip_x = sprite.attributes & 0x20;
-            for (int px = 0; px < 8; ++px) {
-                int bit = flip_x ? px : (7 - px);
-                prepared.pixels[px] = static_cast<u8>(((high >> bit) & 0x01) << 1 | ((low >> bit) & 0x01));
-            }
+            const int start_px = std::max(0, -screen_x);
+            const int end_px = std::min(8, SCREEN_WIDTH - screen_x);
+            for (int px = start_px; px < end_px; ++px) {
+                const int bit = flip_x ? px : (7 - px);
+                const u8 color = static_cast<u8>(((high >> bit) & 0x01) << 1 | ((low >> bit) & 0x01));
+                if (color == 0) {
+                    continue;
+                }
 
-            prepared.behind_bg = sprite.attributes & 0x80;
-            prepared.palette = (sprite.attributes & 0x10) ? 0xFF49 : 0xFF48;
+                const int target_x = screen_x + px;
+                if (sprite_has[target_x]) {
+                    continue;
+                }
 
-            if (prepared_count < prepared_sprites.size()) {
-                prepared_sprites[prepared_count++] = prepared;
+                sprite_has[target_x] = 1;
+                sprite_color[target_x] = color;
+                sprite_palette_idx[target_x] = (sprite.attributes & 0x10) ? 1 : 0;
+                sprite_priority[target_x] = (sprite.attributes & 0x80) ? 1 : 0;
             }
         }
     }
 
-    auto compute_tile_addr = [use_signed_tile_index](u8 tile_number) -> u16 {
-        if (!use_signed_tile_index) {
-            return static_cast<u16>(0x8000 + static_cast<u16>(tile_number) * 16);
-        }
-        int signed_index = static_cast<int8_t>(tile_number);
-        return static_cast<u16>(0x9000 + signed_index * 16);
-    };
+    const PPU_Color* const bg_palette = palette_cache[0].data();
+    const PPU_Color* const obj_palette0 = palette_cache[1].data();
+    const PPU_Color* const obj_palette1 = palette_cache[2].data();
 
-    constexpr int BG_FIFO_CAPACITY = 64;
-    constexpr int BG_FIFO_MASK = BG_FIFO_CAPACITY - 1;
-    std::array<u8, BG_FIFO_CAPACITY> bg_fifo {};
-    int bg_head = 0;
-    int bg_size = 0;
-
-    auto bg_clear = [&]() {
-        bg_head = 0;
-        bg_size = 0;
-    };
-    auto bg_push = [&](u8 value) {
-        if (bg_size >= BG_FIFO_CAPACITY) {
-            bg_head = (bg_head + 1) & BG_FIFO_MASK;
-            --bg_size;
-        }
-        int tail = (bg_head + bg_size) & BG_FIFO_MASK;
-        bg_fifo[tail] = value;
-        ++bg_size;
-    };
-    auto bg_pop = [&]() -> u8 {
-        u8 value = bg_fifo[bg_head];
-        bg_head = (bg_head + 1) & BG_FIFO_MASK;
-        --bg_size;
-        return value;
-    };
-
-    constexpr int SPRITE_FIFO_CAPACITY = 16;
-    constexpr int SPRITE_FIFO_MASK = SPRITE_FIFO_CAPACITY - 1;
-    std::array<SpriteFIFOEntry, SPRITE_FIFO_CAPACITY> sprite_fifo {};
-    int sprite_head = 0;
-    int sprite_size = 0;
-
-    auto sprite_ensure = [&](int index) {
-        if (index >= SPRITE_FIFO_CAPACITY) {
-            return;
-        }
-        while (sprite_size <= index) {
-            int pos = (sprite_head + sprite_size) & SPRITE_FIFO_MASK;
-            sprite_fifo[pos] = SpriteFIFOEntry {};
-            ++sprite_size;
-        }
-    };
-    auto sprite_entry_at = [&](int index) -> SpriteFIFOEntry& {
-        return sprite_fifo[(sprite_head + index) & SPRITE_FIFO_MASK];
-    };
-    auto sprite_pop_front = [&]() -> SpriteFIFOEntry {
-        SpriteFIFOEntry entry = sprite_fifo[sprite_head];
-        sprite_fifo[sprite_head] = SpriteFIFOEntry {};
-        sprite_head = (sprite_head + 1) & SPRITE_FIFO_MASK;
-        --sprite_size;
-        return entry;
-    };
-
-    int bg_fetch_count = 0;
-    int window_fetch_count = 0;
-    bool window_fetching = false;
-    bool scx_offset_applied = false;
-    bool window_used_this_line = false;
-
-    auto fetch_tile = [&](bool use_window) {
-        u16 map_addr = 0;
-        u16 tile_addr = 0;
-
-        if (use_window) {
-            int tile_col = window_fetch_count & 0x1F;
-            map_addr = window_map_base + ((window_tile_row & 0x1F) * 32) + tile_col;
-            u8 tile_number = mem[map_addr];
-            tile_addr = compute_tile_addr(tile_number) + window_tile_line * 2;
-            window_fetch_count++;
-        } else {
-            int tile_col = (bg_tile_col_base + bg_fetch_count) & 0x1F;
-            map_addr = bg_map_base + ((bg_tile_row & 0x1F) * 32) + tile_col;
-            u8 tile_number = mem[map_addr];
-            tile_addr = compute_tile_addr(tile_number) + bg_tile_line * 2;
-            bg_fetch_count++;
-        }
-
-        u8 low = mem[tile_addr];
-        u8 high = mem[tile_addr + 1];
-
-        for (int px = 0; px < 8; ++px) {
-            int bit = 7 - px;
-            u8 color = static_cast<u8>(((high >> bit) & 0x01) << 1 | ((low >> bit) & 0x01));
-            bg_push(color);
-        }
-    };
-
-    size_t next_sprite_index = 0;
     u8* framebuffer_line = framebuffer_back.data() + static_cast<size_t>(ly) * SCREEN_WIDTH * 4;
-
     for (int x = 0; x < SCREEN_WIDTH; ++x) {
-        if (window_possible && !window_fetching && x >= window_screen_x) {
-            window_fetching = true;
-            bg_clear();
-            window_fetch_count = 0;
-            window_tile_row = (window_line_counter >> 3) & 0x1F;
-            window_tile_line = window_line_counter & 0x07;
-        }
+        const u8 bg_color = bg_colors[x];
+        u8 color_id = bg_enabled ? bg_color : 0;
+        const PPU_Color* palette_ptr = bg_palette;
 
-        if (!window_fetching) {
-            while (!scx_offset_applied && bg_size <= scx_offset) {
-                fetch_tile(false);
-            }
-            while (bg_size == 0) {
-                fetch_tile(false);
-            }
-            if (!scx_offset_applied) {
-                for (int i = 0; i < scx_offset; ++i) {
-                    if (bg_size == 0) {
-                        fetch_tile(false);
-                    }
-                    (void)bg_pop();
-                }
-                scx_offset_applied = true;
-            }
-        } else {
-            while (bg_size == 0) {
-                fetch_tile(true);
-            }
-            window_used_this_line = true;
-        }
-
-        while (next_sprite_index < prepared_count && prepared_sprites[next_sprite_index].first_visible_x == x) {
-            const PreparedSprite& sprite = prepared_sprites[next_sprite_index];
-            for (int px = sprite.start_offset; px < 8; ++px) {
-                int queue_index = px - sprite.start_offset;
-                int target_x = x + queue_index;
-                if (target_x >= SCREEN_WIDTH) {
-                    break;
-                }
-                sprite_ensure(queue_index);
-                u8 color = sprite.pixels[px];
-                if (color == 0) {
-                    continue;
-                }
-                SpriteFIFOEntry& entry = sprite_entry_at(queue_index);
-                if (!entry.has_pixel) {
-                    entry.color = color;
-                    entry.palette = sprite.palette;
-                    entry.behind_bg = sprite.behind_bg;
-                    entry.has_pixel = true;
-                }
-            }
-            ++next_sprite_index;
-        }
-
-        sprite_ensure(0);
-
-        u8 color_id = bg_pop();
-        SpriteFIFOEntry sprite_pixel = sprite_pop_front();
-
-        u16 palette = 0xFF47;
-
-        if (!bg_enabled) {
-            color_id = 0;
-        }
-
-        if (sprite_enabled && sprite_pixel.has_pixel) {
+        if (sprite_enabled && sprite_has[x]) {
             bool draw_sprite = true;
-            if (sprite_pixel.behind_bg && bg_enabled && color_id != 0) {
+            if (sprite_priority[x] && bg_enabled && bg_color != 0) {
                 draw_sprite = false;
             }
             if (draw_sprite) {
-                color_id = sprite_pixel.color;
-                palette = sprite_pixel.palette;
+                color_id = sprite_color[x];
+                palette_ptr = sprite_palette_idx[x] ? obj_palette1 : obj_palette0;
             }
         }
 
-        PPU_Color color = get_color(palette, color_id);
+        const PPU_Color& color = palette_ptr[color_id & 0x03];
         u8* dst = framebuffer_line + x * 4;
         dst[0] = color.r;
         dst[1] = color.g;
