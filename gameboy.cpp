@@ -3,6 +3,7 @@
 #include <deque>
 #include <iomanip>
 #include <iostream>
+#include <limits>
 
 #include "gameboy.h"
 #include "opcodes.h"
@@ -18,6 +19,7 @@ Gameboy::Gameboy(const std::string& path_rom)
     ram_banks.resize(0x8000, 0); // max 4 banks of 8KB each
     current_ram_bank = 0;
     current_rom_bank = 1;
+    rom_bank_count = 0;
     ram_enabled = false;
     rom_banking = true;
     mbc_type = 0;
@@ -78,6 +80,15 @@ Gameboy::Gameboy(const std::string& path_rom)
     if (cartridge.size() < 0x8000) {
         std::cerr << "Invalid ROM file (too small): " << path_rom << std::endl;
         exit(1);
+    }
+
+    {
+        size_t bank_count = std::max<size_t>(1, cartridge.size() / 0x4000);
+        if (bank_count > std::numeric_limits<u16>::max()) {
+            bank_count = std::numeric_limits<u16>::max();
+        }
+        rom_bank_count = static_cast<u16>(bank_count);
+        set_rom_bank(current_rom_bank);
     }
 
     switch (cartridge[0x147]) {
@@ -753,7 +764,11 @@ u8 Gameboy::read8(u16 addr) const
 {
     if ((addr >= 0x4000) && (addr <= 0x7FFF)) {
         // reading from the rom memory bank
-        return cartridge[(addr - 0x4000) + (current_rom_bank * 0x4000)];
+        size_t offset = (addr - 0x4000) + static_cast<size_t>(current_rom_bank) * 0x4000;
+        if (offset < cartridge.size()) {
+            return cartridge[offset];
+        }
+        return 0xFF;
     } else if ((addr >= 0xA000) && (addr <= 0xBFFF)) {
         return ram_banks[(addr - 0xA000) + (current_ram_bank * 0x2000)];
     } else if (addr == 0xFF00) {
@@ -871,13 +886,13 @@ void Gameboy::handle_banking(u16 addr, u8 value)
             // DoChangeLoROMBank
 
             if (mbc_type == 2) {
-                current_rom_bank = std::max(1, value & 0x0F);
+                u16 bank = value & 0x0F;
+                set_rom_bank(bank);
                 return;
             }
 
-            value &= 31; // only lower 5 bits are used
-            current_rom_bank &= 224; // clear lower 5 bits
-            current_rom_bank = std::max(1, current_rom_bank | value); // set lower 5 bits
+            u16 bank = (current_rom_bank & 0xE0) | (value & 0x1F); // combine high bits with new low bits
+            set_rom_bank(bank);
         }
     }
     // do ROM or RAM bank change
@@ -888,9 +903,8 @@ void Gameboy::handle_banking(u16 addr, u8 value)
 
                 // DoChangeHiRomBank
 
-                current_rom_bank &= 31; // clear upper 3 bits
-                value &= 224; // clear lower 5 bits
-                current_rom_bank = std::max(1, current_rom_bank | value); // set upper 3 bits
+                u16 bank = (current_rom_bank & 0x1F) | (value & 0xE0); // combine low bits with new high bits
+                set_rom_bank(bank);
 
             } else {
 
@@ -914,6 +928,21 @@ void Gameboy::handle_banking(u16 addr, u8 value)
             }
         }
     }
+}
+
+void Gameboy::set_rom_bank(u16 bank)
+{
+    if (rom_bank_count == 0) {
+        current_rom_bank = 0;
+        return;
+    }
+
+    bank %= rom_bank_count;
+    if (bank == 0 && rom_bank_count > 1) {
+        bank = 1;
+    }
+
+    current_rom_bank = bank;
 }
 
 u8 Gameboy::run_opcode()

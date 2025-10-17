@@ -113,7 +113,8 @@ struct Gameboy {
     u16 PC; // program counter
     u8 joypad_state; // current button states
     u8 mbc_type; // memory bank controller type
-    u8 current_rom_bank; // currently loaded ROM bank number
+    u16 current_rom_bank; // currently loaded ROM bank number
+    u16 rom_bank_count; // total number of 16KB ROM banks
     u8 current_ram_bank; // currently loaded RAM bank number
     bool ime; // interrupt master enable
     bool ime_scheduled; // whether to enable IME after next instruction
@@ -145,6 +146,7 @@ struct Gameboy {
     void init_graphics();
     void cleanup_graphics();
     void handle_banking(u16 addr, u8 value);
+    void set_rom_bank(u16 bank);
     PPU_Color get_color(u16 palette_register, u8 color_id);
     void set_ppu_mode(u8 mode);
     void update_stat_coincidence_flag();
