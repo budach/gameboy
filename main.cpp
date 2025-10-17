@@ -12,9 +12,21 @@ int main(int argc, char** argv)
 
     Gameboy gb(argv[1]);
 
+    float total_time = 0.0f;
+    size_t frames = 0;
+
     while (!WindowShouldClose()) {
         gb.run_one_frame();
         gb.render_screen();
+
+        total_time += GetFrameTime();
+        frames++;
+
+        if (total_time >= 1.0f) {
+            std::cout << "FPS: " << frames << std::endl;
+            total_time -= 1.0f;
+            frames = 0;
+        }
     }
 
     return 0;

@@ -27,6 +27,7 @@ constexpr int CLOCKSPEED = 4194304; // 4.194304 MHz
 constexpr int SCREEN_WIDTH = 160;
 constexpr int SCREEN_HEIGHT = 144;
 constexpr int SCREEN_SCALE = 5;
+constexpr u32 CYCLES_PER_FRAME = 70224;
 
 struct PPU_Color {
     u8 r, g, b, a;
@@ -39,44 +40,26 @@ constexpr PPU_Color DMG_PALETTE[4] = {
     { 0x08, 0x18, 0x20, 0xFF }, // Black
 };
 
+struct Sprite {
+    u8 x;
+    u8 y;
+    u8 tile;
+    u8 attributes;
+    u8 oam_index;
+};
+
 struct Gameboy {
 
     /* ----------------- */
     /* ---  members  --- */
     /* ----------------- */
 
+    /* opcode tables */
     u8 (*opcodes[256])(Gameboy&); // opcode table
     u8 (*cb_opcodes[256])(Gameboy&); // CB-prefixed opcode table
 
-    u8 io_register_masks[256]; // which bits are always read as 1 in I/O registers
-
-    std::vector<u8> memory; // 64KB addressable memory
-    std::vector<u8> cartridge; // full cartridge content
-    std::vector<u8> ram_banks; // external RAM banks (if any)
-    std::array<u8, SCREEN_WIDTH * SCREEN_HEIGHT * 4> framebuffer_back; // 160x144 pixels, RGBA format (back buffer)
-    std::array<u8, SCREEN_WIDTH * SCREEN_HEIGHT * 4> framebuffer_front; // display buffer (front buffer)
-    struct Sprite {
-        u8 x;
-        u8 y;
-        u8 tile;
-        u8 attributes;
-        u8 oam_index;
-    };
-    std::array<Sprite, 10> scanline_sprites; // up to 10 sprites per scanline
-    int scanline_sprite_count; // number of sprites on current scanline
-    int ppu_cycle; // current cycle within scanline
-    u8 ppu_mode; // current PPU mode (0-3)
-    u8 window_line_counter; // how many window lines have been drawn this frame
-    bool scanline_rendered; // whether the current scanline has been rendered
-    std::string header_title; // game title from ROM header
-
-    void* texture; // raylib texture for rendering
-
-    int timer_counter; // counts CPU cycles for timer
-    int divider_counter; // counts CPU cycles for divider register
-    int scanline_counter; // counts CPU cycles for PPU scanlines
-
-    union { // registers
+    /* CPU registers */
+    union {
         u16 AF;
         struct {
             u8 F;
@@ -84,7 +67,7 @@ struct Gameboy {
         } AF_bytes;
     };
 
-    union { // registers
+    union {
         u16 BC;
         struct {
             u8 C;
@@ -92,7 +75,7 @@ struct Gameboy {
         } BC_bytes;
     };
 
-    union { // registers
+    union {
         u16 DE;
         struct {
             u8 E;
@@ -100,7 +83,7 @@ struct Gameboy {
         } DE_bytes;
     };
 
-    union { // registers
+    union {
         u16 HL;
         struct {
             u8 L;
@@ -108,17 +91,31 @@ struct Gameboy {
         } HL_bytes;
     };
 
+    /* core CPU/PPU state */
     u16 SP; // stack pointer
     u16 PC; // program counter
+    int timer_counter; // counts CPU cycles for timer
+    int divider_counter; // counts CPU cycles for divider register
+    int scanline_counter; // counts CPU cycles for PPU scanlines
+    int ppu_cycle; // current cycle within scanline
+    int scanline_sprite_count; // number of sprites on current scanline
     u8 joypad_state; // current button states
+    u8 ppu_mode; // current PPU mode (0-3)
+    u8 window_line_counter; // how many window lines have been drawn this frame
+    bool scanline_rendered; // whether the current scanline has been rendered
+    std::array<std::array<PPU_Color, 4>, 3> palette_cache; // cached decoded palette colors
+
+    std::array<Sprite, 10> scanline_sprites; // up to 10 sprites per scanline
     u8 mbc_type; // memory bank controller type
-    u16 current_rom_bank; // currently loaded ROM bank number
-    u16 rom_bank_count; // total number of 16KB ROM banks
-    u8 current_ram_bank; // currently loaded RAM bank number
     bool ime; // interrupt master enable
     bool ime_scheduled; // whether to enable IME after next instruction
     bool halted; // whether the CPU is halted
     bool halt_bug; // whether the CPU is in halt bug state
+    u16 current_rom_bank; // currently loaded ROM bank number
+    u16 rom_bank_count; // total number of 16KB ROM banks
+    const u8* current_rom_bank_ptr; // cached pointer to currently selected ROM bank
+    u8* current_ram_bank_ptr; // cached pointer to currently selected RAM bank
+    u8 current_ram_bank; // currently loaded RAM bank number
     bool ram_enabled; // whether external RAM is enabled
     bool rom_banking; // whether in ROM banking mode
     std::array<u8, 5> rtc_registers; // RTC registers (MBC3)
@@ -126,6 +123,15 @@ struct Gameboy {
     u8 rtc_selected_register; // currently selected RTC register (0xFF = none)
     u8 rtc_latch_previous_value; // previous value written to latch register
     bool rtc_latch_active; // whether RTC data is latched
+    u8 io_register_masks[256]; // which bits are always read as 1 in I/O registers
+    std::vector<u8> memory; // 64KB addressable memory
+    std::vector<u8> cartridge; // full cartridge content
+    std::vector<u8> ram_banks; // external RAM banks (if any)
+    std::array<u8, SCREEN_WIDTH * SCREEN_HEIGHT * 4> framebuffer_back; // 160x144 pixels, RGBA format (back buffer)
+    std::array<u8, SCREEN_WIDTH * SCREEN_HEIGHT * 4> framebuffer_front; // display buffer (front buffer)
+    std::string header_title; // game title from ROM header
+
+    void* texture; // raylib texture for rendering
 
     /* ----------------- */
     /* ---  methods  --- */
@@ -151,9 +157,70 @@ struct Gameboy {
     void cleanup_graphics();
     void handle_banking(u16 addr, u8 value);
     void set_rom_bank(u16 bank);
+    void set_ram_bank(u8 bank);
+    void refresh_palette_cache(u8 index, u8 value);
     PPU_Color get_color(u16 palette_register, u8 color_id);
     void set_ppu_mode(u8 mode);
     void update_stat_coincidence_flag();
     void evaluate_sprites(u8 ly);
     bool render_scanline();
+
+private:
+    void initialize_memory();
+    void initialize_io_masks();
+    void load_cartridge(const std::string& path_rom);
+    void extract_header_title();
+    void initialize_cpu_state();
+    void initialize_io_registers();
+    void initialize_runtime_state();
+    void initialize_opcode_tables();
 };
+
+inline u8 Gameboy::read8(u16 addr) const
+{
+    const u8* const mem = memory.data();
+
+    if (addr < 0x4000) {
+        return mem[addr];
+    }
+    if (addr < 0x8000) {
+        return current_rom_bank_ptr[addr - 0x4000];
+    }
+    if (addr >= 0xA000 && addr < 0xC000) {
+        if (mbc_type == 3) {
+            if (!ram_enabled) {
+                return 0xFF;
+            }
+            if (rtc_selected_register <= 0x04) {
+                return rtc_latch_active ? rtc_latched_registers[rtc_selected_register]
+                                        : rtc_registers[rtc_selected_register];
+            }
+        }
+        if (!current_ram_bank_ptr) {
+            return 0xFF;
+        }
+        return current_ram_bank_ptr[addr - 0xA000];
+    }
+    if (addr >= 0xFF00) {
+        if (addr == 0xFF00) {
+            u8 select = mem[0xFF00] & 0x30;
+            u8 result = static_cast<u8>(0xC0 | select | 0x0F);
+            if (!(select & 0x10)) {
+                result = static_cast<u8>((result & 0xF0) | (joypad_state & 0x0F));
+            }
+            if (!(select & 0x20)) {
+                result = static_cast<u8>((result & 0xF0) | ((joypad_state >> 4) & 0x0F));
+            }
+            return result;
+        }
+        return static_cast<u8>(mem[addr] | io_register_masks[addr - 0xFF00]);
+    }
+    return mem[addr];
+}
+
+inline u16 Gameboy::read16(u16 addr) const
+{
+    const u8 low = read8(addr);
+    const u8 high = read8(static_cast<u16>(addr + 1));
+    return static_cast<u16>((static_cast<u16>(high) << 8) | low);
+}

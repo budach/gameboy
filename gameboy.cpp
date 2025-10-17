@@ -11,13 +11,26 @@
 #include "raylib.h"
 
 Gameboy::Gameboy(const std::string& path_rom)
-    : texture(nullptr)
+    : current_rom_bank_ptr(nullptr)
+    , current_ram_bank_ptr(nullptr)
+    , texture(nullptr)
 {
-    // init memory
+    initialize_memory();
+    initialize_io_masks();
+    load_cartridge(path_rom);
+    extract_header_title();
+    initialize_cpu_state();
+    initialize_io_registers();
+    initialize_runtime_state();
+    initialize_opcode_tables();
+    init_graphics();
+}
 
+void Gameboy::initialize_memory()
+{
     memory.resize(0x10000, 0);
     ram_banks.resize(0x8000, 0); // max 4 banks of 8KB each
-    current_ram_bank = 0;
+    set_ram_bank(0);
     current_rom_bank = 1;
     rom_bank_count = 0;
     ram_enabled = false;
@@ -34,9 +47,10 @@ Gameboy::Gameboy(const std::string& path_rom)
     ppu_mode = 0;
     window_line_counter = 0;
     scanline_rendered = false;
+}
 
-    // io register masks (default: no mask = 0x00)
-
+void Gameboy::initialize_io_masks()
+{
     std::fill(std::begin(io_register_masks), std::end(io_register_masks), 0x00);
 
     io_register_masks[0x03] = 0xFF; // Unmapped registers read as 0xFF
@@ -70,9 +84,10 @@ Gameboy::Gameboy(const std::string& path_rom)
     io_register_masks[0x23] = 0x3F; // NR44: bits 0-5 unused
     io_register_masks[0x26] = 0x70; // NR52: bits 4-6 unused
     io_register_masks[0x41] = 0x80; // STAT: bit 7 unused
+}
 
-    // load rom
-
+void Gameboy::load_cartridge(const std::string& path_rom)
+{
     std::ifstream file(path_rom, std::ios::binary);
     if (!file) {
         std::cerr << "Failed to open ROM file: " << path_rom << std::endl;
@@ -87,14 +102,16 @@ Gameboy::Gameboy(const std::string& path_rom)
         exit(1);
     }
 
-    {
-        size_t bank_count = std::max<size_t>(1, cartridge.size() / 0x4000);
-        if (bank_count > std::numeric_limits<u16>::max()) {
-            bank_count = std::numeric_limits<u16>::max();
-        }
-        rom_bank_count = static_cast<u16>(bank_count);
-        set_rom_bank(current_rom_bank);
+    size_t bank_count = std::max<size_t>(1, (cartridge.size() + 0x3FFF) / 0x4000);
+    if (bank_count > std::numeric_limits<u16>::max()) {
+        bank_count = std::numeric_limits<u16>::max();
     }
+    rom_bank_count = static_cast<u16>(bank_count);
+    const size_t padded_size = static_cast<size_t>(rom_bank_count) * 0x4000;
+    if (cartridge.size() < padded_size) {
+        cartridge.resize(padded_size, 0xFF);
+    }
+    set_rom_bank(current_rom_bank);
 
     switch (cartridge[0x147]) {
     case 0x00:
@@ -118,39 +135,42 @@ Gameboy::Gameboy(const std::string& path_rom)
         break;
     default:
         std::cerr << "Unsupported MBC type in ROM header: 0x"
-                  << std::hex << std::setw(2) << std::setfill('0') << (int)cartridge[0x147]
+                  << std::hex << std::setw(2) << std::setfill('0') << static_cast<int>(cartridge[0x147])
                   << std::dec << std::endl;
         exit(1);
     }
-
-    // load first 32KB of ROM into Gameboy memory (fixed bank 0 + initial switchable bank)
 
     const size_t first_chunk = std::min(cartridge.size(), size_t(0x8000));
     std::copy(cartridge.begin(), cartridge.begin() + first_chunk, memory.begin());
     if (first_chunk < 0x8000) {
         std::fill(memory.begin() + first_chunk, memory.begin() + 0x8000, 0xFF);
     }
+}
 
-    // read ROM header info
-
-    for (int i = 0x134; i <= 0x143; i++) {
-        char c = read8(i);
-        if (c == 0)
+void Gameboy::extract_header_title()
+{
+    header_title.clear();
+    for (int address = 0x134; address <= 0x143; ++address) {
+        char c = static_cast<char>(read8(address));
+        if (c == 0) {
             break;
+        }
         header_title.push_back(c);
     }
+}
 
-    // init registers (state after boot ROM)
-
+void Gameboy::initialize_cpu_state()
+{
     AF = 0x01B0;
     BC = 0x0013;
     DE = 0x00D8;
     HL = 0x014D;
     SP = 0xFFFE;
     PC = 0x0100;
+}
 
-    // set hardware registers to initial values after boot ROM execution
-    // from https://gbdev.io/pandocs/Power_Up_Sequence.html
+void Gameboy::initialize_io_registers()
+{
     memory[0xFF00] = 0xCF;
     memory[0xFF01] = 0x00;
     memory[0xFF02] = 0x7E;
@@ -194,11 +214,16 @@ Gameboy::Gameboy(const std::string& path_rom)
     memory[0xFF4B] = 0x00;
     memory[0xFFFF] = 0x00;
 
+    refresh_palette_cache(0, memory[0xFF47]);
+    refresh_palette_cache(1, memory[0xFF48]);
+    refresh_palette_cache(2, memory[0xFF49]);
+
     ppu_mode = memory[0xFF41] & 0x03;
     update_stat_coincidence_flag();
+}
 
-    // init misc
-
+void Gameboy::initialize_runtime_state()
+{
     ime = false;
     ime_scheduled = false;
     halted = false;
@@ -206,7 +231,10 @@ Gameboy::Gameboy(const std::string& path_rom)
     joypad_state = 0xFF; // all buttons unpressed
     timer_counter = 1024; // CLOCKSPEED / frequency (4096 Hz default)
     divider_counter = 0; // DIV increments at 16384 Hz
+}
 
+void Gameboy::initialize_opcode_tables()
+{
     // init opcode table
 
     for (int i = 0; i < 256; i++) {
@@ -716,8 +744,6 @@ Gameboy::Gameboy(const std::string& path_rom)
     cb_opcodes[0xFD] = op_0xCB_0xFD_SET_7_L;
     cb_opcodes[0xFE] = op_0xCB_0xFE_SET_7_HL;
     cb_opcodes[0xFF] = op_0xCB_0xFF_SET_7_A;
-
-    init_graphics();
 }
 
 void Gameboy::init_graphics()
@@ -725,7 +751,6 @@ void Gameboy::init_graphics()
     std::ostringstream window_title;
     window_title << "Gameboy Emulator - " << header_title;
 
-    // SetConfigFlags(FLAG_VSYNC_HINT);
     InitWindow(SCREEN_WIDTH * SCREEN_SCALE, SCREEN_HEIGHT * SCREEN_SCALE, window_title.str().c_str());
     // SetTargetFPS(60);
     SetExitKey(0); // Disable ESC exit key
@@ -757,59 +782,7 @@ void Gameboy::cleanup_graphics()
 
 void Gameboy::request_interrupt(u8 bit)
 {
-    write8(0xFF0F, read8(0xFF0F) | (1 << bit));
-}
-
-u8 Gameboy::read8(u16 addr) const
-{
-    if ((addr >= 0x4000) && (addr <= 0x7FFF)) {
-        // reading from the rom memory bank
-        size_t offset = (addr - 0x4000) + static_cast<size_t>(current_rom_bank) * 0x4000;
-        if (offset < cartridge.size()) {
-            return cartridge[offset];
-        }
-        return 0xFF;
-    } else if ((addr >= 0xA000) && (addr <= 0xBFFF)) {
-        if (mbc_type == 3) {
-            if (!ram_enabled) {
-                return 0xFF;
-            }
-            if (rtc_selected_register <= 0x04) {
-                return rtc_latch_active ? rtc_latched_registers[rtc_selected_register]
-                                        : rtc_registers[rtc_selected_register];
-            }
-        }
-
-        size_t offset = (addr - 0xA000) + static_cast<size_t>(current_ram_bank) * 0x2000;
-        if (offset < ram_banks.size()) {
-            return ram_banks[offset];
-        }
-        return 0xFF;
-    } else if (addr == 0xFF00) {
-        // joypad register
-
-        u8 select = memory[0xFF00] & 0x30; // bits 4 and 5 are select bits
-        u8 result = 0xC0 | select | 0x0F; // upper 2 bits set, lower 4 bits set
-
-        if (!(select & 0x10)) { // direction buttons selected
-            result = (result & 0xF0) | (joypad_state & 0x0F);
-        }
-
-        if (!(select & 0x20)) { // button buttons selected
-            result = (result & 0xF0) | ((joypad_state >> 4) & 0x0F);
-        }
-
-        return result;
-    } else if (addr > 0xFF00) {
-        return memory[addr] | io_register_masks[addr - 0xFF00];
-    }
-
-    return memory[addr];
-}
-
-u16 Gameboy::read16(u16 addr) const
-{
-    return (read8(addr + 1) << 8) | read8(addr);
+    write8(0xFF0F, static_cast<u8>(read8(0xFF0F) | (1 << bit)));
 }
 
 void Gameboy::write8(u16 addr, u8 value)
@@ -826,9 +799,13 @@ void Gameboy::write8(u16 addr, u8 value)
             return;
         }
 
-        size_t offset = (addr - 0xA000) + static_cast<size_t>(current_ram_bank) * 0x2000;
-        if (offset < ram_banks.size()) {
-            ram_banks[offset] = value;
+        if (!current_ram_bank_ptr) {
+            return;
+        }
+
+        const size_t offset = addr - 0xA000;
+        if (offset < 0x2000) {
+            current_ram_bank_ptr[offset] = value;
         }
     } else if (addr == 0xFF00) {
         // joypad register, only bits 4-5 are writable
@@ -865,9 +842,9 @@ void Gameboy::write8(u16 addr, u8 value)
         memory[0xFF44] = 0;
     } else if (addr == 0xFF46) {
         // DMA transfer
-        u16 source = value << 8; // value * 0x100
+        u16 source = static_cast<u16>(value) << 8;
         for (int i = 0; i < 0xA0; i++) {
-            write8(0xFE00 + i, read8(source + i));
+            write8(0xFE00 + i, read8(static_cast<u16>(source + i)));
         }
     } else {
         memory[addr] = value;
@@ -944,12 +921,12 @@ void Gameboy::handle_banking(u16 addr, u8 value)
 
                 // DoRAMBankChange
 
-                current_ram_bank = value & 0x03;
+                set_ram_bank(value & 0x03);
             }
         }
         if (mbc_type == 3) {
             if ((value & 0x0F) <= 0x03) {
-                current_ram_bank = value & 0x03;
+                set_ram_bank(value & 0x03);
                 rtc_selected_register = 0xFF;
             } else if ((value & 0x0F) >= 0x08 && (value & 0x0F) <= 0x0C) {
                 rtc_selected_register = (value & 0x0F) - 0x08;
@@ -968,7 +945,7 @@ void Gameboy::handle_banking(u16 addr, u8 value)
             value &= 0x01;
             rom_banking = (value == 0);
             if (rom_banking) {
-                current_ram_bank = 0;
+                set_ram_bank(0);
             }
         } else if (mbc_type == 3) {
             if (value == 0x00) {
@@ -989,6 +966,7 @@ void Gameboy::set_rom_bank(u16 bank)
 {
     if (rom_bank_count == 0) {
         current_rom_bank = 0;
+        current_rom_bank_ptr = memory.data() + 0x4000;
         return;
     }
 
@@ -998,6 +976,35 @@ void Gameboy::set_rom_bank(u16 bank)
     }
 
     current_rom_bank = bank;
+    const size_t offset = static_cast<size_t>(current_rom_bank) * 0x4000;
+    current_rom_bank_ptr = cartridge.data() + offset;
+}
+
+void Gameboy::set_ram_bank(u8 bank)
+{
+    current_ram_bank = bank;
+
+    if (ram_banks.empty()) {
+        current_ram_bank_ptr = nullptr;
+        return;
+    }
+
+    const size_t offset = static_cast<size_t>(current_ram_bank) * 0x2000;
+    if ((offset + 0x2000) > ram_banks.size()) {
+        current_ram_bank_ptr = nullptr;
+        return;
+    }
+
+    current_ram_bank_ptr = ram_banks.data() + offset;
+}
+
+void Gameboy::refresh_palette_cache(u8 index, u8 value)
+{
+    auto& cache = palette_cache[index];
+    cache[0] = DMG_PALETTE[(value >> 0) & 0x03];
+    cache[1] = DMG_PALETTE[(value >> 2) & 0x03];
+    cache[2] = DMG_PALETTE[(value >> 4) & 0x03];
+    cache[3] = DMG_PALETTE[(value >> 6) & 0x03];
 }
 
 u8 Gameboy::run_opcode()
@@ -1516,8 +1523,7 @@ bool Gameboy::render_scanline()
 
 void Gameboy::ppu_step(u8 cycles)
 {
-    u8 lcdc = read8(0xFF40);
-    if (!(lcdc & 0x80)) {
+    if (!(memory[0xFF40] & 0x80)) {
         ppu_cycle = 0;
         scanline_counter = 0;
         scanline_sprite_count = 0;
@@ -1525,31 +1531,24 @@ void Gameboy::ppu_step(u8 cycles)
         window_line_counter = 0;
         memory[0xFF44] = 0;
         ppu_mode = 0;
-
-        u8 stat = memory[0xFF41] & ~0x03;
-        if (memory[0xFF44] == memory[0xFF45]) {
-            stat |= 0x04;
-        } else {
-            stat &= 0xFB;
-        }
-        memory[0xFF41] = stat;
+        update_stat_coincidence_flag();
         return;
     }
 
-    for (u8 i = 0; i < cycles; ++i) {
-        u8 ly = memory[0xFF44];
+    while (cycles > 0) {
+        const u8 ly = memory[0xFF44];
+        const bool visible_scanline = ly < 144;
 
-        if (ly >= 144) {
-            if (ppu_mode != 1) {
-                set_ppu_mode(1);
-            }
-        } else {
+        u16 target_cycle = 456;
+
+        if (visible_scanline) {
             if (ppu_cycle < 80) {
                 if (ppu_mode != 2) {
                     set_ppu_mode(2);
                     evaluate_sprites(ly);
                     scanline_rendered = false;
                 }
+                target_cycle = 80;
             } else if (ppu_cycle < 252) {
                 if (ppu_mode != 3) {
                     set_ppu_mode(3);
@@ -1561,43 +1560,54 @@ void Gameboy::ppu_step(u8 cycles)
                     }
                     scanline_rendered = true;
                 }
+                target_cycle = 252;
             } else {
                 if (ppu_mode != 0) {
                     set_ppu_mode(0);
                 }
+                target_cycle = 456;
             }
+        } else {
+            if (ppu_mode != 1) {
+                set_ppu_mode(1);
+            }
+            target_cycle = 456;
         }
+
+        const u16 diff = target_cycle - ppu_cycle;
+        const u8 step = diff <= cycles ? static_cast<u8>(std::min<u16>(diff, 255)) : cycles;
 
         update_stat_coincidence_flag();
 
-        ++ppu_cycle;
+        ppu_cycle += step;
         scanline_counter = ppu_cycle;
+        cycles -= step;
 
         if (ppu_cycle >= 456) {
             ppu_cycle -= 456;
             scanline_counter = ppu_cycle;
 
-            ly = memory[0xFF44] + 1;
-            memory[0xFF44] = ly;
+            u8 new_ly = static_cast<u8>(memory[0xFF44] + 1);
+            memory[0xFF44] = new_ly;
 
-            if ((read8(0xFF40) & 0x20) && ly == read8(0xFF4A)) {
+            const u8 lcdc_after = memory[0xFF40];
+            if ((lcdc_after & 0x20) && new_ly == memory[0xFF4A]) {
                 window_line_counter = 0;
             }
 
-            if (ly == 144) {
+            if (new_ly == 144) {
                 set_ppu_mode(1);
                 request_interrupt(0);
                 framebuffer_front = framebuffer_back;
-            } else if (ly > 153) {
+            } else if (new_ly > 153) {
                 memory[0xFF44] = 0;
-                ly = 0;
                 window_line_counter = 0;
                 scanline_rendered = false;
                 evaluate_sprites(0);
                 set_ppu_mode(2);
-            } else if (ly < 144) {
+            } else if (new_ly < 144) {
                 scanline_rendered = false;
-                evaluate_sprites(ly);
+                evaluate_sprites(new_ly);
                 set_ppu_mode(2);
             }
 
@@ -1611,7 +1621,7 @@ void Gameboy::run_one_frame()
     update_inputs();
 
     u32 cycles_this_frame = 0;
-    while (cycles_this_frame < 70224) {
+    while (cycles_this_frame < CYCLES_PER_FRAME) {
         u8 cycles = run_opcode();
         cycles += check_interrupts();
         update_timers(cycles);
@@ -1635,10 +1645,6 @@ void Gameboy::render_screen()
         { 0, 0 },
         0.0f,
         WHITE);
-
-    std::ostringstream window_title;
-    window_title << "Gameboy Emulator - " << header_title << " - FPS: " << GetFPS();
-    SetWindowTitle(window_title.str().c_str());
 
     EndDrawing();
 }
