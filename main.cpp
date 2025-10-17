@@ -32,19 +32,11 @@ int main(int argc, char** argv)
     return 0;
 }
 
-// currently passing tests:
-// sm83 single-step JSON tests
-// blargg cpu_instrs.gb
-// blargg instr_timing.gb
-
-// todo: halt_bug.gb (needs graphics)
+// dmg-acid2.gb test (left mole) fails on purpose.
+// other emus (e.g mGBA) also fail it. will make real games look better
+// e.g. with passing the left mole test player and NPC sprites in
+// Link's Awakening can overlap in weird ways
 
 // to run single step JSON tests
 // #include "single_step_tests.h"
 // run_all_tests("tests/");
-
-// to optimize based on flamegraph:
-// read8()
-// render_scanline()
-// update_stat_coincidence_flag()
-// get_color()

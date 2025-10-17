@@ -1386,21 +1386,9 @@ bool Gameboy::render_scanline()
     std::array<u8, SCREEN_WIDTH> sprite_has {};
 
     if (sprite_enabled && scanline_sprite_count > 0) {
-        std::array<Sprite, 10> sorted = scanline_sprites;
-        auto begin = sorted.begin();
-        auto end = begin + scanline_sprite_count;
-        std::sort(begin, end, [](const Sprite& a, const Sprite& b) {
-            int ax = static_cast<int>(a.x);
-            int bx = static_cast<int>(b.x);
-            if (ax == bx) {
-                return a.oam_index < b.oam_index;
-            }
-            return ax < bx;
-        });
-
         const int sprite_height = tall_sprites ? 16 : 8;
         for (int i = 0; i < scanline_sprite_count; ++i) {
-            const Sprite& sprite = sorted[i];
+            const Sprite& sprite = scanline_sprites[i]; // Preserve OAM order for sprite priority
 
             int screen_x = static_cast<int>(sprite.x) - 8;
             if (screen_x >= SCREEN_WIDTH || screen_x <= -8) {
