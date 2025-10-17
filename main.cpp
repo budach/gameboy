@@ -23,7 +23,7 @@ int main(int argc, char** argv)
         frames++;
 
         if (total_time >= 1.0f) {
-            std::cout << "FPS: " << frames << std::endl;
+            gb.update_window_title(frames);
             total_time -= 1.0f;
             frames = 0;
         }

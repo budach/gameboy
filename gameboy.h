@@ -99,6 +99,7 @@ struct Gameboy {
     int scanline_counter; // counts CPU cycles for PPU scanlines
     int ppu_cycle; // current cycle within scanline
     int scanline_sprite_count; // number of sprites on current scanline
+    int target_fps; // target frames per second
     u8 joypad_state; // current button states
     u8 ppu_mode; // current PPU mode (0-3)
     u8 window_line_counter; // how many window lines have been drawn this frame
@@ -130,6 +131,7 @@ struct Gameboy {
     std::array<u8, SCREEN_WIDTH * SCREEN_HEIGHT * 4> framebuffer_back; // 160x144 pixels, RGBA format (back buffer)
     std::array<u8, SCREEN_WIDTH * SCREEN_HEIGHT * 4> framebuffer_front; // display buffer (front buffer)
     std::string header_title; // game title from ROM header
+    std::string window_title; // window title string
 
     void* texture; // raylib texture for rendering
 
@@ -163,6 +165,7 @@ struct Gameboy {
     void set_ppu_mode(u8 mode);
     void update_stat_coincidence_flag();
     void evaluate_sprites(u8 ly);
+    void update_window_title(size_t measured_fps);
     bool render_scanline();
 
 private:

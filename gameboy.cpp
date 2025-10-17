@@ -1,5 +1,6 @@
 #include <algorithm>
 #include <bit>
+#include <format>
 #include <iomanip>
 #include <iostream>
 #include <limits>
@@ -747,11 +748,12 @@ void Gameboy::initialize_opcode_tables()
 
 void Gameboy::init_graphics()
 {
-    std::ostringstream window_title;
-    window_title << "Gameboy Emulator - " << header_title;
+    target_fps = 60;
 
-    InitWindow(SCREEN_WIDTH * SCREEN_SCALE, SCREEN_HEIGHT * SCREEN_SCALE, window_title.str().c_str());
-    // SetTargetFPS(60);
+    window_title = "Gameboy Emulator - " + header_title;
+
+    InitWindow(SCREEN_WIDTH * SCREEN_SCALE, SCREEN_HEIGHT * SCREEN_SCALE, window_title.c_str());
+    SetTargetFPS(target_fps);
     SetExitKey(0); // Disable ESC exit key
 
     // Create texture for framebuffer
@@ -766,6 +768,11 @@ void Gameboy::init_graphics()
     Texture2D* tex = new Texture2D(LoadTextureFromImage(image));
     SetTextureFilter(*tex, TEXTURE_FILTER_POINT);
     texture = static_cast<void*>(tex);
+}
+
+void Gameboy::update_window_title(size_t measured_fps)
+{
+    SetWindowTitle(std::format("{} - {} FPS", window_title, measured_fps).c_str());
 }
 
 void Gameboy::cleanup_graphics()
@@ -1035,6 +1042,18 @@ u8 Gameboy::run_opcode()
 
 void Gameboy::update_inputs()
 {
+    // handle FPS updates with page up and down
+
+    if (IsKeyPressed(KEY_PAGE_UP)) {
+        target_fps += 30;
+        SetTargetFPS(target_fps);
+    } else if (IsKeyPressed(KEY_PAGE_DOWN)) {
+        target_fps = std::max(target_fps - 30, 30);
+        SetTargetFPS(target_fps);
+    }
+
+    // now the actual gameboy inputs
+
     u8 new_state = 0xFF; // all buttons unpressed
 
     if (IsKeyDown(KEY_RIGHT)) {
