@@ -985,7 +985,7 @@ void Gameboy::init_graphics()
         .width = SCREEN_WIDTH,
         .height = SCREEN_HEIGHT,
         .mipmaps = 1,
-        .format = PIXELFORMAT_UNCOMPRESSED_R8G8B8A8
+        .format = PIXELFORMAT_UNCOMPRESSED_R8G8B8
     };
 
     Texture2D* tex = new Texture2D(LoadTextureFromImage(image));
@@ -1671,7 +1671,7 @@ bool Gameboy::render_scanline()
     const PPU_Color* const obj_palette0 = palette_cache[1].data();
     const PPU_Color* const obj_palette1 = palette_cache[2].data();
 
-    u8* framebuffer_line = framebuffer_back.data() + static_cast<size_t>(ly) * SCREEN_WIDTH * 4;
+    u8* framebuffer_line = framebuffer_back.data() + static_cast<size_t>(ly) * SCREEN_WIDTH * 3;
     for (int x = 0; x < SCREEN_WIDTH; ++x) {
         const u8 bg_color = bg_colors[x];
         u8 color_id = bg_enabled ? bg_color : 0;
@@ -1689,11 +1689,10 @@ bool Gameboy::render_scanline()
         }
 
         const PPU_Color& color = palette_ptr[color_id & 0x03];
-        u8* dst = framebuffer_line + x * 4;
+        u8* dst = framebuffer_line + x * 3;
         dst[0] = color.r;
         dst[1] = color.g;
         dst[2] = color.b;
-        dst[3] = color.a;
     }
 
     return window_used_this_line;

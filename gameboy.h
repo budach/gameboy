@@ -31,14 +31,14 @@ constexpr int SCREEN_SCALE = 5;
 constexpr u32 CYCLES_PER_FRAME = 70224;
 
 struct PPU_Color {
-    u8 r, g, b, a;
+    u8 r, g, b;
 };
 
 constexpr PPU_Color DMG_PALETTE[4] = {
-    { 0xE0, 0xF8, 0xD0, 0xFF }, // White
-    { 0x88, 0xC0, 0x70, 0xFF }, // Light gray
-    { 0x34, 0x68, 0x56, 0xFF }, // Dark gray
-    { 0x08, 0x18, 0x20, 0xFF }, // Black
+    { 0xE0, 0xF8, 0xD0 }, // White
+    { 0x88, 0xC0, 0x70 }, // Light gray
+    { 0x34, 0x68, 0x56 }, // Dark gray
+    { 0x08, 0x18, 0x20 }, // Black
 };
 
 struct Sprite {
@@ -128,8 +128,8 @@ struct Gameboy {
     std::vector<u8> memory; // 64KB addressable memory
     std::vector<u8> cartridge; // full cartridge content
     std::vector<u8> ram_banks; // external RAM banks (if any)
-    std::array<u8, SCREEN_WIDTH * SCREEN_HEIGHT * 4> framebuffer_back; // 160x144 pixels, RGBA format (back buffer)
-    std::array<u8, SCREEN_WIDTH * SCREEN_HEIGHT * 4> framebuffer_front; // display buffer (front buffer)
+    std::array<u8, SCREEN_WIDTH * SCREEN_HEIGHT * 3> framebuffer_back; // 160x144 pixels, RGB format (back buffer)
+    std::array<u8, SCREEN_WIDTH * SCREEN_HEIGHT * 3> framebuffer_front; // display buffer (front buffer)
     std::string header_title; // game title from ROM header
     std::string window_title; // window title string
     std::filesystem::path rom_path; // path to loaded ROM
