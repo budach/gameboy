@@ -113,6 +113,10 @@ void Gameboy::load_cartridge(const std::string& path_rom)
     }
     set_rom_bank(current_rom_bank);
 
+    std::cout << "Cartridge type: 0x"
+              << std::hex << std::setw(2) << std::setfill('0') << static_cast<int>(cartridge[0x147])
+              << std::dec << std::endl;
+
     switch (cartridge[0x147]) {
     case 0x00:
         mbc_type = 0;
