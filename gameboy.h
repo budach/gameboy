@@ -3,6 +3,7 @@
 #include <array>
 #include <bit>
 #include <cstdint>
+#include <filesystem>
 #include <fstream>
 #include <iostream>
 #include <string>
@@ -115,7 +116,6 @@ struct Gameboy {
     u16 current_rom_bank; // currently loaded ROM bank number
     u16 rom_bank_count; // total number of 16KB ROM banks
     const u8* current_rom_bank_ptr; // cached pointer to currently selected ROM bank
-    u8* current_ram_bank_ptr; // cached pointer to currently selected RAM bank
     u8 current_ram_bank; // currently loaded RAM bank number
     bool ram_enabled; // whether external RAM is enabled
     bool rom_banking; // whether in ROM banking mode
@@ -132,6 +132,13 @@ struct Gameboy {
     std::array<u8, SCREEN_WIDTH * SCREEN_HEIGHT * 4> framebuffer_front; // display buffer (front buffer)
     std::string header_title; // game title from ROM header
     std::string window_title; // window title string
+    std::filesystem::path rom_path; // path to loaded ROM
+    std::filesystem::path save_path; // path to battery-backed save file
+    size_t ram_bank_size; // size in bytes of one external RAM bank
+    size_t ram_bank_count; // number of external RAM banks
+    bool cartridge_has_ram; // whether cartridge exposes external RAM
+    bool cartridge_has_battery; // whether cartridge RAM is battery-backed
+    bool ram_dirty; // whether RAM content has been modified since last save
 
     void* texture; // raylib texture for rendering
 
@@ -177,6 +184,8 @@ private:
     void initialize_io_registers();
     void initialize_runtime_state();
     void initialize_opcode_tables();
+    void load_save_ram();
+    void save_save_ram();
 };
 
 inline u8 Gameboy::read8(u16 addr) const
@@ -199,10 +208,17 @@ inline u8 Gameboy::read8(u16 addr) const
                                         : rtc_registers[rtc_selected_register];
             }
         }
-        if (!current_ram_bank_ptr) {
+        if (ram_banks.empty() || ram_bank_size == 0 || ram_bank_count == 0) {
             return 0xFF;
         }
-        return current_ram_bank_ptr[addr - 0xA000];
+        const size_t offset = addr - 0xA000;
+        const size_t bank_offset = ram_bank_size ? (offset % ram_bank_size) : 0;
+        const size_t bank_index = ram_bank_count ? (current_ram_bank % ram_bank_count) : 0;
+        const size_t absolute_index = bank_index * ram_bank_size + bank_offset;
+        if (absolute_index >= ram_banks.size()) {
+            return 0xFF;
+        }
+        return ram_banks[absolute_index];
     }
     if (addr >= 0xFF00) {
         if (addr == 0xFF00) {

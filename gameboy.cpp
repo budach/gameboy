@@ -1,22 +1,38 @@
 #include <algorithm>
 #include <bit>
+#include <filesystem>
 #include <format>
 #include <iomanip>
 #include <iostream>
 #include <limits>
+#include <system_error>
 
 #include "gameboy.h"
 #include "opcodes.h"
 
 #include "raylib.h"
 
+namespace fs = std::filesystem;
+
 Gameboy::Gameboy(const std::string& path_rom)
     : current_rom_bank_ptr(nullptr)
-    , current_ram_bank_ptr(nullptr)
+    , rom_path(path_rom)
+    , save_path()
+    , ram_bank_size(0)
+    , ram_bank_count(0)
+    , cartridge_has_ram(false)
+    , cartridge_has_battery(false)
+    , ram_dirty(false)
     , texture(nullptr)
 {
     initialize_memory();
     initialize_io_masks();
+    save_path = rom_path;
+    if (!save_path.has_extension()) {
+        save_path += ".sav";
+    } else {
+        save_path.replace_extension(".sav");
+    }
     load_cartridge(path_rom);
     extract_header_title();
     initialize_cpu_state();
@@ -29,7 +45,9 @@ Gameboy::Gameboy(const std::string& path_rom)
 void Gameboy::initialize_memory()
 {
     memory.resize(0x10000, 0);
-    ram_banks.resize(0x8000, 0); // max 4 banks of 8KB each
+    ram_banks.clear();
+    ram_bank_size = 0;
+    ram_bank_count = 0;
     set_ram_bank(0);
     current_rom_bank = 1;
     rom_bank_count = 0;
@@ -47,6 +65,9 @@ void Gameboy::initialize_memory()
     ppu_mode = 0;
     window_line_counter = 0;
     scanline_rendered = false;
+    cartridge_has_ram = false;
+    cartridge_has_battery = false;
+    ram_dirty = false;
 }
 
 void Gameboy::initialize_io_masks()
@@ -113,42 +134,240 @@ void Gameboy::load_cartridge(const std::string& path_rom)
     }
     set_rom_bank(current_rom_bank);
 
+    const u8 cartridge_type = cartridge[0x147];
+    const u8 ram_size_code = cartridge[0x149];
+
     std::cout << "Cartridge type: 0x"
-              << std::hex << std::setw(2) << std::setfill('0') << static_cast<int>(cartridge[0x147])
+              << std::hex << std::setw(2) << std::setfill('0') << static_cast<int>(cartridge_type)
               << std::dec << std::endl;
 
-    switch (cartridge[0x147]) {
+    cartridge_has_ram = false;
+    cartridge_has_battery = false;
+
+    switch (cartridge_type) {
     case 0x00:
         mbc_type = 0;
         break;
     case 0x01:
-    case 0x02:
-    case 0x03:
         mbc_type = 1;
         break;
+    case 0x02:
+        mbc_type = 1;
+        cartridge_has_ram = true;
+        break;
+    case 0x03:
+        mbc_type = 1;
+        cartridge_has_ram = true;
+        cartridge_has_battery = true;
+        break;
     case 0x05:
-    case 0x06:
         mbc_type = 2;
         break;
+    case 0x06:
+        mbc_type = 2;
+        cartridge_has_battery = true;
+        break;
     case 0x0F:
+        mbc_type = 3;
+        break;
     case 0x10:
+        mbc_type = 3;
+        cartridge_has_ram = true;
+        cartridge_has_battery = true;
+        break;
     case 0x11:
+        mbc_type = 3;
+        break;
     case 0x12:
+        mbc_type = 3;
+        cartridge_has_ram = true;
+        break;
     case 0x13:
         mbc_type = 3;
+        cartridge_has_ram = true;
+        cartridge_has_battery = true;
         break;
     default:
         std::cerr << "Unsupported MBC type in ROM header: 0x"
-                  << std::hex << std::setw(2) << std::setfill('0') << static_cast<int>(cartridge[0x147])
+                  << std::hex << std::setw(2) << std::setfill('0') << static_cast<int>(cartridge_type)
                   << std::dec << std::endl;
         exit(1);
     }
+
+    // MBC2 always has 512x4-bit internal RAM despite header reporting 0
+    if (mbc_type == 2) {
+        cartridge_has_ram = true;
+    }
+
+    if (ram_size_code != 0) {
+        cartridge_has_ram = true;
+    }
+
+    switch (ram_size_code) {
+    case 0x00:
+        ram_bank_size = 0;
+        ram_bank_count = 0;
+        break;
+    case 0x01:
+        ram_bank_size = 0x800; // 2KB
+        ram_bank_count = 1;
+        break;
+    case 0x02:
+        ram_bank_size = 0x2000; // 8KB
+        ram_bank_count = 1;
+        break;
+    case 0x03:
+        ram_bank_size = 0x2000; // 4 x 8KB = 32KB
+        ram_bank_count = 4;
+        break;
+    case 0x04:
+        ram_bank_size = 0x2000; // 16 x 8KB = 128KB
+        ram_bank_count = 16;
+        break;
+    case 0x05:
+        ram_bank_size = 0x2000; // 8 x 8KB = 64KB
+        ram_bank_count = 8;
+        break;
+    default:
+        std::cerr << "Unsupported RAM size code in ROM header: 0x"
+                  << std::hex << std::setw(2) << std::setfill('0') << static_cast<int>(ram_size_code)
+                  << std::dec << std::endl;
+        exit(1);
+    }
+
+    if (mbc_type == 2) {
+        ram_bank_size = 0x200; // 512 bytes mirrored across address space
+        ram_bank_count = 1;
+    }
+
+    if (cartridge_has_ram && ram_bank_size == 0 && mbc_type != 2) {
+        ram_bank_size = 0x2000;
+        ram_bank_count = 1;
+    }
+
+    if (!cartridge_has_ram || ram_bank_size == 0 || ram_bank_count == 0) {
+        ram_banks.clear();
+    } else {
+        ram_banks.assign(ram_bank_size * ram_bank_count, 0);
+    }
+    set_ram_bank(0);
+    ram_dirty = false;
 
     const size_t first_chunk = std::min(cartridge.size(), size_t(0x8000));
     std::copy(cartridge.begin(), cartridge.begin() + first_chunk, memory.begin());
     if (first_chunk < 0x8000) {
         std::fill(memory.begin() + first_chunk, memory.begin() + 0x8000, 0xFF);
     }
+
+    load_save_ram();
+}
+
+void Gameboy::load_save_ram()
+{
+    if (!cartridge_has_ram || !cartridge_has_battery || ram_banks.empty()) {
+        return;
+    }
+
+    std::error_code ec;
+    if (!fs::exists(save_path, ec)) {
+        if (ec) {
+            std::cerr << "Failed to access save file: " << save_path << " (" << ec.message() << ")" << std::endl;
+        }
+        return;
+    }
+
+    const auto expected_size = ram_banks.size();
+    ec.clear();
+    const auto actual_size = fs::file_size(save_path, ec);
+    bool file_size_mismatch = false;
+    if (ec) {
+        std::cerr << "Failed to query save file size: " << save_path << " (" << ec.message() << ")" << std::endl;
+    } else if (actual_size != expected_size) {
+        file_size_mismatch = true;
+        std::cout << "Save file size (" << actual_size << " bytes) does not match expected RAM size (" << expected_size
+                  << " bytes); loading as much as possible." << std::endl;
+    }
+
+    std::ifstream file(save_path, std::ios::binary);
+    if (!file) {
+        std::cerr << "Failed to open save file for reading: " << save_path << std::endl;
+        return;
+    }
+
+    file.read(reinterpret_cast<char*>(ram_banks.data()), static_cast<std::streamsize>(ram_banks.size()));
+    const std::streamsize read_bytes = file.gcount();
+    const size_t copied_bytes = read_bytes < 0 ? 0 : static_cast<size_t>(read_bytes);
+    if (copied_bytes < ram_banks.size()) {
+        std::fill(ram_banks.begin() + copied_bytes, ram_banks.end(), 0);
+    }
+
+    if (!file && !file.eof()) {
+        std::cerr << "Failed while reading save file: " << save_path << std::endl;
+        ram_dirty = true;
+        return;
+    }
+
+    const bool partial_read = copied_bytes != expected_size;
+    ram_dirty = file_size_mismatch || partial_read;
+
+    if (ram_dirty) {
+        std::cout << "Loaded save file: " << save_path << " (will rewrite to expected size)" << std::endl;
+    } else {
+        std::cout << "Loaded save file: " << save_path << std::endl;
+    }
+}
+
+void Gameboy::save_save_ram()
+{
+    if (!cartridge_has_ram || !cartridge_has_battery || ram_banks.empty()) {
+        return;
+    }
+
+    if (!ram_dirty) {
+        return;
+    }
+
+    std::error_code ec;
+    fs::path parent = save_path.parent_path();
+    if (!parent.empty()) {
+        if (!fs::exists(parent, ec)) {
+            if (ec) {
+                std::cerr << "Failed to access save directory: " << parent << " (" << ec.message() << ")" << std::endl;
+                return;
+            }
+            ec.clear();
+            if (!fs::create_directories(parent, ec)) {
+                if (ec) {
+                    std::cerr << "Failed to create save directory: " << parent << " (" << ec.message() << ")" << std::endl;
+                    return;
+                }
+            }
+        } else if (ec) {
+            std::cerr << "Failed to access save directory: " << parent << " (" << ec.message() << ")" << std::endl;
+            return;
+        }
+    }
+
+    std::ofstream file(save_path, std::ios::binary | std::ios::trunc);
+    if (!file) {
+        std::cerr << "Failed to open save file for writing: " << save_path << std::endl;
+        return;
+    }
+
+    file.write(reinterpret_cast<const char*>(ram_banks.data()), static_cast<std::streamsize>(ram_banks.size()));
+    if (!file) {
+        std::cerr << "Failed to write save file: " << save_path << std::endl;
+        return;
+    }
+
+    file.flush();
+    if (!file) {
+        std::cerr << "Failed to flush save file: " << save_path << std::endl;
+        return;
+    }
+
+    ram_dirty = false;
+    std::cout << "Saved save file: " << save_path << std::endl;
 }
 
 void Gameboy::extract_header_title()
@@ -809,13 +1028,22 @@ void Gameboy::write8(u16 addr, u8 value)
             return;
         }
 
-        if (!current_ram_bank_ptr) {
+        if (ram_banks.empty() || ram_bank_size == 0 || ram_bank_count == 0) {
             return;
         }
 
         const size_t offset = addr - 0xA000;
-        if (offset < 0x2000) {
-            current_ram_bank_ptr[offset] = value;
+        const size_t bank_offset = ram_bank_size ? (offset % ram_bank_size) : 0;
+        const size_t bank_index = ram_bank_count ? (current_ram_bank % ram_bank_count) : 0;
+        const size_t absolute_index = bank_index * ram_bank_size + bank_offset;
+        if (absolute_index >= ram_banks.size()) {
+            return;
+        }
+
+        u8& target = ram_banks[absolute_index];
+        if (target != value) {
+            target = value;
+            ram_dirty = true;
         }
     } else if (addr == 0xFF00) {
         // joypad register, only bits 4-5 are writable
@@ -874,6 +1102,7 @@ void Gameboy::handle_banking(u16 addr, u8 value)
 {
     // RAM enabling
     if (addr < 0x2000) {
+        bool previous_ram_enabled = ram_enabled;
         if (mbc_type == 2) {
 
             // DoRAMBankEnable
@@ -897,6 +1126,10 @@ void Gameboy::handle_banking(u16 addr, u8 value)
             if (!ram_enabled) {
                 rtc_selected_register = 0xFF;
             }
+        }
+
+        if (previous_ram_enabled && !ram_enabled) {
+            save_save_ram();
         }
     }
     // ROM bank change
@@ -995,20 +1228,12 @@ void Gameboy::set_rom_bank(u16 bank)
 
 void Gameboy::set_ram_bank(u8 bank)
 {
-    current_ram_bank = bank;
-
-    if (ram_banks.empty()) {
-        current_ram_bank_ptr = nullptr;
+    if (ram_bank_count == 0) {
+        current_ram_bank = 0;
         return;
     }
 
-    const size_t offset = static_cast<size_t>(current_ram_bank) * 0x2000;
-    if ((offset + 0x2000) > ram_banks.size()) {
-        current_ram_bank_ptr = nullptr;
-        return;
-    }
-
-    current_ram_bank_ptr = ram_banks.data() + offset;
+    current_ram_bank = bank % ram_bank_count;
 }
 
 void Gameboy::refresh_palette_cache(u8 index, u8 value)
@@ -1079,7 +1304,7 @@ void Gameboy::update_inputs()
     if (IsKeyDown(KEY_S)) {
         new_state &= ~(1 << 5); // B button
     }
-    if (IsKeyDown(KEY_SPACE)) {
+    if (IsKeyDown(KEY_BACKSPACE)) {
         new_state &= ~(1 << 6); // Select
     }
     if (IsKeyDown(KEY_ENTER)) {
@@ -1604,5 +1829,6 @@ void Gameboy::render_screen()
 
 Gameboy::~Gameboy()
 {
+    save_save_ram();
     cleanup_graphics();
 }
