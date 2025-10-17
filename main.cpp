@@ -1,4 +1,3 @@
-#include <chrono>
 #include <iostream>
 
 #include "gameboy.h"
@@ -13,23 +12,9 @@ int main(int argc, char** argv)
 
     Gameboy gb(argv[1]);
 
-    // once per second print interrupt counts for debugging
-    auto last_time = std::chrono::high_resolution_clock::now();
-
     while (!WindowShouldClose()) {
         gb.run_one_frame();
         gb.render_screen();
-
-        auto current_time = std::chrono::high_resolution_clock::now();
-        if ((current_time - last_time).count() >= 1000000000) {
-            last_time = current_time;
-            std::cout << "Interrupt counts: "
-                      << "VBLANK=" << gb.interrupt_counts[0] << ", " // 60 max per second?
-                      << "LCD STAT=" << gb.interrupt_counts[1] << ", "
-                      << "TIMER=" << gb.interrupt_counts[2] << ", "
-                      << "SERIAL=" << gb.interrupt_counts[3] << ", "
-                      << "JOYPAD=" << gb.interrupt_counts[4] << "\n";
-        }
     }
 
     return 0;
@@ -45,3 +30,9 @@ int main(int argc, char** argv)
 // to run single step JSON tests
 // #include "single_step_tests.h"
 // run_all_tests("tests/");
+
+// to optimize based on flamegraph:
+// read8()
+// render_scanline()
+// update_stat_coincidence_flag()
+// get_color()

@@ -207,14 +207,6 @@ Gameboy::Gameboy(const std::string& path_rom)
     timer_counter = 1024; // CLOCKSPEED / frequency (4096 Hz default)
     divider_counter = 0; // DIV increments at 16384 Hz
 
-    // just for debugging
-
-    interrupt_counts[0] = 0; // VBLANK
-    interrupt_counts[1] = 0; // LCD STAT
-    interrupt_counts[2] = 0; // TIMER
-    interrupt_counts[3] = 0; // SERIAL
-    interrupt_counts[4] = 0; // JOYPAD
-
     // init opcode table
 
     for (int i = 0; i < 256; i++) {
@@ -733,9 +725,9 @@ void Gameboy::init_graphics()
     std::ostringstream window_title;
     window_title << "Gameboy Emulator - " << header_title;
 
-    SetConfigFlags(FLAG_VSYNC_HINT);
+    // SetConfigFlags(FLAG_VSYNC_HINT);
     InitWindow(SCREEN_WIDTH * SCREEN_SCALE, SCREEN_HEIGHT * SCREEN_SCALE, window_title.str().c_str());
-    SetTargetFPS(60);
+    // SetTargetFPS(60);
     SetExitKey(0); // Disable ESC exit key
 
     // Create texture for framebuffer
@@ -766,10 +758,6 @@ void Gameboy::cleanup_graphics()
 void Gameboy::request_interrupt(u8 bit)
 {
     write8(0xFF0F, read8(0xFF0F) | (1 << bit));
-
-    if (bit < 5) {
-        interrupt_counts[bit]++;
-    }
 }
 
 u8 Gameboy::read8(u16 addr) const
@@ -1307,7 +1295,7 @@ bool Gameboy::render_scanline()
     struct PreparedSprite {
         int first_visible_x = 0;
         int start_offset = 0;
-        std::array<u8, 8> pixels{};
+        std::array<u8, 8> pixels {};
         bool behind_bg = false;
         u16 palette = 0xFF48;
     };
@@ -1359,7 +1347,7 @@ bool Gameboy::render_scanline()
             u8 low = read8(tile_addr);
             u8 high = read8(tile_addr + 1);
 
-            std::array<u8, 8> pixels{};
+            std::array<u8, 8> pixels {};
             for (int px = 0; px < 8; ++px) {
                 int bit = (sprite.attributes & 0x20) ? px : (7 - px);
                 u8 color = ((high >> bit) & 0x01) << 1 | ((low >> bit) & 0x01);
@@ -1461,8 +1449,7 @@ bool Gameboy::render_scanline()
             window_used_this_line = true;
         }
 
-        while (next_sprite_index < prepared_sprites.size() &&
-            prepared_sprites[next_sprite_index].first_visible_x == x) {
+        while (next_sprite_index < prepared_sprites.size() && prepared_sprites[next_sprite_index].first_visible_x == x) {
             const PreparedSprite& sprite = prepared_sprites[next_sprite_index];
             for (int px = sprite.start_offset; px < 8; ++px) {
                 int queue_index = px - sprite.start_offset;
@@ -1489,7 +1476,7 @@ bool Gameboy::render_scanline()
         }
 
         if (sprite_fifo.empty()) {
-            sprite_fifo.push_back(SpriteFIFOEntry{});
+            sprite_fifo.push_back(SpriteFIFOEntry {});
         }
 
         BGPixel bg_pixel = bg_fifo.front();
