@@ -9,6 +9,8 @@
 #include <string>
 #include <vector>
 
+#include "raylib.h"
+
 using u8 = uint8_t;
 using i8 = int8_t;
 using u16 = uint16_t;
@@ -30,15 +32,21 @@ constexpr int SCREEN_HEIGHT = 144;
 constexpr int SCREEN_SCALE = 5;
 constexpr u32 CYCLES_PER_FRAME = 70224;
 
-struct PPU_Color {
-    u8 r, g, b, a;
-};
+using PPU_Color = Color;
 
-constexpr PPU_Color DMG_PALETTE[4] = {
-    { 0xE0, 0xF8, 0xD0, 0xFF }, // White
-    { 0x88, 0xC0, 0x70, 0xFF }, // Light gray
-    { 0x34, 0x68, 0x56, 0xFF }, // Dark gray
-    { 0x08, 0x18, 0x20, 0xFF }, // Black
+constexpr u32 pack_color(u8 r, u8 g, u8 b, u8 a)
+{
+    return static_cast<u32>(r)
+        | (static_cast<u32>(g) << 8)
+        | (static_cast<u32>(b) << 16)
+        | (static_cast<u32>(a) << 24);
+}
+
+constexpr std::array<u32, 4> DMG_PALETTE = {
+    pack_color(0xE0, 0xF8, 0xD0, 0xFF), // White
+    pack_color(0x88, 0xC0, 0x70, 0xFF), // Light gray
+    pack_color(0x34, 0x68, 0x56, 0xFF), // Dark gray
+    pack_color(0x08, 0x18, 0x20, 0xFF), // Black
 };
 
 struct Sprite {
@@ -105,7 +113,7 @@ struct Gameboy {
     u8 ppu_mode; // current PPU mode (0-3)
     u8 window_line_counter; // how many window lines have been drawn this frame
     bool scanline_rendered; // whether the current scanline has been rendered
-    std::array<std::array<PPU_Color, 4>, 3> palette_cache; // cached decoded palette colors
+    std::array<std::array<u32, 4>, 3> palette_cache; // cached decoded palette colors (packed RGBA)
 
     std::array<Sprite, 10> scanline_sprites; // up to 10 sprites per scanline
     u8 mbc_type; // memory bank controller type
@@ -128,8 +136,8 @@ struct Gameboy {
     std::vector<u8> memory; // 64KB addressable memory
     std::vector<u8> cartridge; // full cartridge content
     std::vector<u8> ram_banks; // external RAM banks (if any)
-    std::array<u8, SCREEN_WIDTH * SCREEN_HEIGHT * 4> framebuffer_back; // 160x144 pixels, RGBA format (back buffer)
-    std::array<u8, SCREEN_WIDTH * SCREEN_HEIGHT * 4> framebuffer_front; // display buffer (front buffer)
+    std::array<u32, SCREEN_WIDTH * SCREEN_HEIGHT> framebuffer_back; // 160x144 pixels, RGBA format (back buffer)
+    std::array<u32, SCREEN_WIDTH * SCREEN_HEIGHT> framebuffer_front; // display buffer (front buffer)
     std::string header_title; // game title from ROM header
     std::string window_title; // window title string
     std::filesystem::path rom_path; // path to loaded ROM

@@ -976,7 +976,7 @@ void Gameboy::init_graphics()
     window_title = "Gameboy Emulator - " + header_title;
 
     InitWindow(SCREEN_WIDTH * SCREEN_SCALE, SCREEN_HEIGHT * SCREEN_SCALE, window_title.c_str());
-    SetTargetFPS(target_fps);
+    // SetTargetFPS(target_fps);
     SetExitKey(0); // Disable ESC exit key
 
     // Create texture for framebuffer
@@ -1427,13 +1427,13 @@ PPU_Color Gameboy::get_color(u16 palette_register, u8 color_id)
     const u8 index = color_id & 0x03;
     switch (palette_register) {
     case 0xFF47:
-        return palette_cache[0][index];
+        return std::bit_cast<PPU_Color>(palette_cache[0][index]);
     case 0xFF48:
-        return palette_cache[1][index];
+        return std::bit_cast<PPU_Color>(palette_cache[1][index]);
     case 0xFF49:
-        return palette_cache[2][index];
+        return std::bit_cast<PPU_Color>(palette_cache[2][index]);
     default:
-        return DMG_PALETTE[(read8(palette_register) >> (index * 2)) & 0x03];
+        return std::bit_cast<PPU_Color>(DMG_PALETTE[(read8(palette_register) >> (index * 2)) & 0x03]);
     }
 }
 
@@ -1667,15 +1667,15 @@ bool Gameboy::render_scanline()
         }
     }
 
-    const PPU_Color* const bg_palette = palette_cache[0].data();
-    const PPU_Color* const obj_palette0 = palette_cache[1].data();
-    const PPU_Color* const obj_palette1 = palette_cache[2].data();
+    const u32* const bg_palette = palette_cache[0].data();
+    const u32* const obj_palette0 = palette_cache[1].data();
+    const u32* const obj_palette1 = palette_cache[2].data();
 
-    u8* framebuffer_line = framebuffer_back.data() + static_cast<size_t>(ly) * SCREEN_WIDTH * 4;
+    u32* framebuffer_line = framebuffer_back.data() + static_cast<size_t>(ly) * SCREEN_WIDTH;
     for (int x = 0; x < SCREEN_WIDTH; ++x) {
         const u8 bg_color = bg_colors[x];
         u8 color_id = bg_enabled ? bg_color : 0;
-        const PPU_Color* palette_ptr = bg_palette;
+        const u32* palette_ptr = bg_palette;
 
         if (sprite_enabled && sprite_has[x]) {
             bool draw_sprite = true;
@@ -1688,12 +1688,7 @@ bool Gameboy::render_scanline()
             }
         }
 
-        const PPU_Color& color = palette_ptr[color_id & 0x03];
-        u8* dst = framebuffer_line + x * 4;
-        dst[0] = color.r;
-        dst[1] = color.g;
-        dst[2] = color.b;
-        dst[3] = color.a;
+        framebuffer_line[x] = palette_ptr[color_id & 0x03];
     }
 
     return window_used_this_line;
