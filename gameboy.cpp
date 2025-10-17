@@ -23,6 +23,11 @@ Gameboy::Gameboy(const std::string& path_rom)
     ram_enabled = false;
     rom_banking = true;
     mbc_type = 0;
+    rtc_registers.fill(0);
+    rtc_latched_registers.fill(0);
+    rtc_selected_register = 0xFF;
+    rtc_latch_previous_value = 0xFF;
+    rtc_latch_active = false;
     scanline_counter = 0; // counts cycles within current scanline
     scanline_sprite_count = 0;
     ppu_cycle = 0;
@@ -103,6 +108,13 @@ Gameboy::Gameboy(const std::string& path_rom)
     case 0x05:
     case 0x06:
         mbc_type = 2;
+        break;
+    case 0x0F:
+    case 0x10:
+    case 0x11:
+    case 0x12:
+    case 0x13:
+        mbc_type = 3;
         break;
     default:
         std::cerr << "Unsupported MBC type in ROM header: 0x"
@@ -770,7 +782,21 @@ u8 Gameboy::read8(u16 addr) const
         }
         return 0xFF;
     } else if ((addr >= 0xA000) && (addr <= 0xBFFF)) {
-        return ram_banks[(addr - 0xA000) + (current_ram_bank * 0x2000)];
+        if (mbc_type == 3) {
+            if (!ram_enabled) {
+                return 0xFF;
+            }
+            if (rtc_selected_register <= 0x04) {
+                return rtc_latch_active ? rtc_latched_registers[rtc_selected_register]
+                                        : rtc_registers[rtc_selected_register];
+            }
+        }
+
+        size_t offset = (addr - 0xA000) + static_cast<size_t>(current_ram_bank) * 0x2000;
+        if (offset < ram_banks.size()) {
+            return ram_banks[offset];
+        }
+        return 0xFF;
     } else if (addr == 0xFF00) {
         // joypad register
 
@@ -803,8 +829,18 @@ void Gameboy::write8(u16 addr, u8 value)
     if (addr < 0x8000) {
         handle_banking(addr, value);
     } else if ((addr >= 0xA000) && (addr < 0xC000)) {
-        if (ram_enabled) {
-            ram_banks[(addr - 0xA000) + (current_ram_bank * 0x2000)] = value;
+        if (!ram_enabled) {
+            return;
+        }
+
+        if (mbc_type == 3 && rtc_selected_register <= 0x04) {
+            rtc_registers[rtc_selected_register] = value;
+            return;
+        }
+
+        size_t offset = (addr - 0xA000) + static_cast<size_t>(current_ram_bank) * 0x2000;
+        if (offset < ram_banks.size()) {
+            ram_banks[offset] = value;
         }
     } else if (addr == 0xFF00) {
         // joypad register, only bits 4-5 are writable
@@ -860,22 +896,28 @@ void Gameboy::handle_banking(u16 addr, u8 value)
 {
     // RAM enabling
     if (addr < 0x2000) {
-        if (mbc_type == 1 || mbc_type == 2) {
+        if (mbc_type == 2) {
 
             // DoRAMBankEnable
 
-            if (mbc_type == 2) {
-                // if bit 4 of addr is set do nothing
-                if (addr & (1 << 4)) {
-                    return;
-                }
+            // if bit 4 of addr is set do nothing
+            if (addr & (1 << 4)) {
+                return;
             }
+        }
 
-            value &= 0x0F;
-            if (value == 0x0A) {
+        if (mbc_type == 1 || mbc_type == 2) {
+            u8 masked = value & 0x0F;
+            if (masked == 0x0A) {
                 ram_enabled = true;
-            } else if (value == 0x00) {
+            } else if (masked == 0x00) {
                 ram_enabled = false;
+            }
+        } else if (mbc_type == 3) {
+            value &= 0x0F;
+            ram_enabled = (value == 0x0A);
+            if (!ram_enabled) {
+                rtc_selected_register = 0xFF;
             }
         }
     }
@@ -892,6 +934,10 @@ void Gameboy::handle_banking(u16 addr, u8 value)
             }
 
             u16 bank = (current_rom_bank & 0xE0) | (value & 0x1F); // combine high bits with new low bits
+            set_rom_bank(bank);
+        }
+        if (mbc_type == 3) {
+            u16 bank = value & 0x7F;
             set_rom_bank(bank);
         }
     }
@@ -913,6 +959,16 @@ void Gameboy::handle_banking(u16 addr, u8 value)
                 current_ram_bank = value & 0x03;
             }
         }
+        if (mbc_type == 3) {
+            if ((value & 0x0F) <= 0x03) {
+                current_ram_bank = value & 0x03;
+                rtc_selected_register = 0xFF;
+            } else if ((value & 0x0F) >= 0x08 && (value & 0x0F) <= 0x0C) {
+                rtc_selected_register = (value & 0x0F) - 0x08;
+            } else {
+                rtc_selected_register = 0xFF;
+            }
+        }
     }
     // this will change whether we are doing ROM banking
     // or RAM banking with the above if statement
@@ -925,6 +981,17 @@ void Gameboy::handle_banking(u16 addr, u8 value)
             rom_banking = (value == 0);
             if (rom_banking) {
                 current_ram_bank = 0;
+            }
+        } else if (mbc_type == 3) {
+            if (value == 0x00) {
+                rtc_latch_active = false;
+                rtc_latch_previous_value = 0x00;
+            } else if (value == 0x01) {
+                if (rtc_latch_previous_value == 0x00) {
+                    rtc_latched_registers = rtc_registers;
+                    rtc_latch_active = true;
+                }
+                rtc_latch_previous_value = 0x01;
             }
         }
     }

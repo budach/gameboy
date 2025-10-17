@@ -122,6 +122,11 @@ struct Gameboy {
     bool halt_bug; // whether the CPU is in halt bug state
     bool ram_enabled; // whether external RAM is enabled
     bool rom_banking; // whether in ROM banking mode
+    std::array<u8, 5> rtc_registers; // RTC registers (MBC3)
+    std::array<u8, 5> rtc_latched_registers; // Latched RTC snapshot
+    u8 rtc_selected_register; // currently selected RTC register (0xFF = none)
+    u8 rtc_latch_previous_value; // previous value written to latch register
+    bool rtc_latch_active; // whether RTC data is latched
 
     /* ----------------- */
     /* ---  methods  --- */
