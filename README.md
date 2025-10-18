@@ -3,12 +3,14 @@
 ## Build
 
 ```bash
+# requires raylib
 make release
 ```
 
 ## Run
 
 ```bash
+# only .GB supported, no ZIP files
 ./gameboy <gb_rom_file>
 ```
 
